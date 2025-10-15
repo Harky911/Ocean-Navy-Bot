@@ -1,6 +1,17 @@
 import TelegramBot from 'node-telegram-bot-api';
 import { configManager } from './config.js';
 import { logger } from '../utils/logger.js';
+import { env } from '../config/env.js';
+
+function isAllowedChat(chatId: string): boolean {
+  // If no whitelist is configured, allow all chats (backward compatible)
+  if (!env.TELEGRAM_ALLOWED_CHATS) {
+    return true;
+  }
+  
+  const allowedChats = env.TELEGRAM_ALLOWED_CHATS.split(',').map(id => id.trim());
+  return allowedChats.includes(chatId);
+}
 
 export async function isUserAdmin(bot: TelegramBot, chatId: number, userId: number): Promise<boolean> {
   try {
@@ -15,6 +26,16 @@ export async function isUserAdmin(bot: TelegramBot, chatId: number, userId: numb
 export function registerCommands(bot: TelegramBot): void {
   bot.onText(/\/start/, async (msg) => {
     const chatId = msg.chat.id.toString();
+    
+    // Check if chat is allowed
+    if (!isAllowedChat(chatId)) {
+      logger.warn({ chatId }, 'Unauthorized chat attempted to use bot');
+      await bot.sendMessage(msg.chat.id,
+        `⚠️ This bot is private and restricted to authorized groups only.`
+      );
+      return;
+    }
+    
     const config = configManager.getConfig(chatId);
 
     await bot.sendMessage(msg.chat.id,
@@ -34,6 +55,9 @@ export function registerCommands(bot: TelegramBot): void {
   });
 
   bot.onText(/\/help/, async (msg) => {
+    const chatId = msg.chat.id.toString();
+    if (!isAllowedChat(chatId)) return;
+    
     await bot.sendMessage(msg.chat.id,
       `🌊 *Ocean Navy Bot - Commands*\n\n` +
       `*Everyone:*\n` +
@@ -50,6 +74,8 @@ export function registerCommands(bot: TelegramBot): void {
 
   bot.onText(/\/status/, async (msg) => {
     const chatId = msg.chat.id.toString();
+    if (!isAllowedChat(chatId)) return;
+    
     const config = configManager.getConfig(chatId);
 
     await bot.sendMessage(msg.chat.id,
@@ -64,6 +90,9 @@ export function registerCommands(bot: TelegramBot): void {
   bot.onText(/\/setmin (.+)/, async (msg, match) => {
     if (!match) return;
 
+    const chatId = msg.chat.id.toString();
+    if (!isAllowedChat(chatId)) return;
+
     const isAdmin = msg.chat.type === 'private' || await isUserAdmin(bot, msg.chat.id, msg.from!.id);
     if (!isAdmin) {
       await bot.sendMessage(msg.chat.id, '❌ Only admins can change settings.');
@@ -76,7 +105,6 @@ export function registerCommands(bot: TelegramBot): void {
       return;
     }
 
-    const chatId = msg.chat.id.toString();
     configManager.updateConfig(chatId, { minOceanAlert: amount });
 
     await bot.sendMessage(msg.chat.id, `✅ Minimum OCEAN alert set to *${amount}*`, { parse_mode: 'Markdown' });
@@ -84,13 +112,15 @@ export function registerCommands(bot: TelegramBot): void {
   });
 
   bot.onText(/\/enable/, async (msg) => {
+    const chatId = msg.chat.id.toString();
+    if (!isAllowedChat(chatId)) return;
+
     const isAdmin = msg.chat.type === 'private' || await isUserAdmin(bot, msg.chat.id, msg.from!.id);
     if (!isAdmin) {
       await bot.sendMessage(msg.chat.id, '❌ Only admins can change settings.');
       return;
     }
 
-    const chatId = msg.chat.id.toString();
     configManager.updateConfig(chatId, { enabled: true });
 
     await bot.sendMessage(msg.chat.id, '✅ OCEAN buy alerts *enabled*', { parse_mode: 'Markdown' });
@@ -98,13 +128,15 @@ export function registerCommands(bot: TelegramBot): void {
   });
 
   bot.onText(/\/disable/, async (msg) => {
+    const chatId = msg.chat.id.toString();
+    if (!isAllowedChat(chatId)) return;
+
     const isAdmin = msg.chat.type === 'private' || await isUserAdmin(bot, msg.chat.id, msg.from!.id);
     if (!isAdmin) {
       await bot.sendMessage(msg.chat.id, '❌ Only admins can change settings.');
       return;
     }
 
-    const chatId = msg.chat.id.toString();
     configManager.updateConfig(chatId, { enabled: false });
 
     await bot.sendMessage(msg.chat.id, '⏸️ OCEAN buy alerts *disabled*', { parse_mode: 'Markdown' });

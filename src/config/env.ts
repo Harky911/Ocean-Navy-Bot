@@ -16,6 +16,7 @@ const envSchema = z.object({
   TELEGRAM_BOT_TOKEN: z.string().min(20),
   TELEGRAM_CHAT_ID: z.string(),
   TELEGRAM_POLLING: z.coerce.boolean().default(true),
+  TELEGRAM_ALLOWED_CHATS: z.string().optional(), // Comma-separated chat IDs
 
   DEBOUNCE_MS: z.coerce.number().default(0),
   MIN_OCEAN_ALERT: z.coerce.number().default(1.0),

@@ -70,6 +70,7 @@ OCEAN_ADDRESS=0x967da4048cD07aB37855c090aAF366e4ce1b9F48
 TELEGRAM_BOT_TOKEN=your-bot-token-from-botfather
 TELEGRAM_CHAT_ID=your-default-chat-id
 TELEGRAM_POLLING=true
+# TELEGRAM_ALLOWED_CHATS=-1001234567890,-1009876543210  # Optional: Whitelist specific chats
 
 # Alerts
 DEBOUNCE_MS=0
@@ -84,6 +85,7 @@ MIN_OCEAN_ALERT=1.0
 4. Add your bot to your group/channel
 5. Get chat ID (send a message, then visit `https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates`)
 6. Copy chat ID to `TELEGRAM_CHAT_ID`
+7. **Optional:** To restrict bot to specific chats, add `TELEGRAM_ALLOWED_CHATS` with comma-separated chat IDs
 
 ### 4. Configure Webhook Provider
 
