@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment & Config
+.env
+.env.local
+.env.production
+config.json
+
+# Logs
+*.log
+logs/
+.pm2/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+*.iml
+
+# Test coverage
+coverage/
+
+# Deployment (keep these local only)
+deploy.sh
+DEPLOY.md
+
+# Temporary files
+*.tmp
+.cache/
