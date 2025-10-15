@@ -214,9 +214,6 @@ npm run dev
 
 # Build
 npm run build
-
-# Type check
-npx tsc --noEmit
 ```
 
 ## Project Structure
