@@ -23,13 +23,15 @@ export function decodeUniswapV2Swap(log: DexLog): SwapEvent | null {
     }
 
     const args = decoded.args as unknown as {
+      sender: string;
       amount0In: bigint;
       amount1In: bigint;
       amount0Out: bigint;
       amount1Out: bigint;
+      to: string;
     };
 
-    const { amount0In, amount1In, amount0Out, amount1Out } = args;
+    const { amount0In, amount1In, amount0Out, amount1Out, to } = args;
 
     // In Uniswap V2:
     // - If OCEAN is token0: amount0Out > 0 = OCEAN leaving pool = BUY
@@ -63,6 +65,7 @@ export function decodeUniswapV2Swap(log: DexLog): SwapEvent | null {
       blockNumber: log.blockNumber,
       oceanAmount,
       isBuy,
+      buyerAddress: isBuy ? to.toLowerCase() : undefined,
       removed: log.removed,
     };
   } catch (error) {

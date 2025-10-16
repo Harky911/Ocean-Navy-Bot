@@ -72,6 +72,9 @@ TELEGRAM_CHAT_ID=your-default-chat-id
 TELEGRAM_POLLING=true
 # TELEGRAM_ALLOWED_CHATS=-1001234567890,-1009876543210  # Optional: Whitelist specific chats
 
+# Alchemy (for RPC & balance queries)
+ALCHEMY_API_KEY=your-alchemy-api-key-here
+
 # Alerts
 DEBOUNCE_MS=0
 MIN_OCEAN_ALERT=1.0

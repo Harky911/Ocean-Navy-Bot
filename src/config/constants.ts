@@ -6,6 +6,20 @@ export const OCEAN_TOKEN = {
   symbol: 'OCEAN',
 } as const;
 
+// OCEAN token addresses by chain ID
+export const OCEAN_TOKEN_BY_CHAIN: Record<number, { address: `0x${string}`; decimals: number; symbol: string }> = {
+  1: {
+    address: '0x967da4048cd07ab37855c090aaf366e4ce1b9f48' as `0x${string}`,
+    decimals: 18,
+    symbol: 'OCEAN',
+  },
+  137: {
+    address: '0x282d8efce846a88b159800bd4130ad77443fa1a1' as `0x${string}`, // mOCEAN on Polygon
+    decimals: 18,
+    symbol: 'mOCEAN',
+  },
+};
+
 export const BALANCER_VAULT_ADDRESS = '0xBA12222222228d8Ba445958a75a0704d566BF2C8'.toLowerCase() as `0x${string}`;
 
 export const UNISWAP_V2_SWAP_TOPIC = '0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822';

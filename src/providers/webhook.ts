@@ -41,7 +41,7 @@ export async function handleWebhook(req: Request, res: Response): Promise<void> 
       uniqueEvents.push(event);
     }
 
-    const buys = classifyBuys(uniqueEvents, env.MIN_OCEAN_ALERT);
+    const buys = await classifyBuys(uniqueEvents, env.MIN_OCEAN_ALERT);
     logger.info({ count: buys.length }, 'Classified buys');
 
     for (const buy of buys) {

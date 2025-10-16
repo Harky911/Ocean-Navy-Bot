@@ -58,6 +58,7 @@ export function decodeBalancerV2Swap(log: DexLog): SwapEvent | null {
       blockNumber: log.blockNumber,
       oceanAmount: amountOut,
       isBuy,
+      buyerAddress: log.transactionFrom,
       removed: log.removed,
     };
   } catch (error) {

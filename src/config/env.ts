@@ -18,6 +18,8 @@ const envSchema = z.object({
   TELEGRAM_POLLING: z.coerce.boolean().default(true),
   TELEGRAM_ALLOWED_CHATS: z.string().optional(), // Comma-separated chat IDs
 
+  ALCHEMY_API_KEY: z.string().min(20), // For RPC calls (balance queries)
+
   DEBOUNCE_MS: z.coerce.number().default(0),
   MIN_OCEAN_ALERT: z.coerce.number().default(1.0),
 });

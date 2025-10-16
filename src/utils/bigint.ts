@@ -16,6 +16,13 @@ export function formatOcean(amount: bigint, decimals = 18): string {
   return `${wholeStr}.${trimmedFractional}`;
 }
 
+export function oceanToNumber(amount: bigint, decimals = 18): number {
+  const divisor = 10n ** BigInt(decimals);
+  const whole = Number(amount / divisor);
+  const remainder = Number(amount % divisor);
+  return whole + (remainder / Number(divisor));
+}
+
 export function parseOcean(amount: string, decimals = 18): bigint {
   const [whole, fractional = ''] = amount.split('.');
   const paddedFractional = fractional.padEnd(decimals, '0').slice(0, decimals);

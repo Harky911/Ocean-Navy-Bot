@@ -1,14 +1,30 @@
 import { BuyAlert } from './types.js';
 
 export function formatBuyAlert(buy: BuyAlert): string {
-  return [
-    `🚀 *OCEAN BUY*`,
-    ``,
-    `💰 Amount: *${buy.oceanFormatted} OCEAN*`,
-    `⛓️  Chain: ${buy.chainName}`,
-    `🏦 DEX: ${buy.poolLabel}`,
-    `🔗 [View Transaction](${buy.txUrl})`,
-  ].join('\n');
+  const lines = [`🚀 *OCEAN BUY*`, ``];
+
+  // Amount with USD value on separate line for mobile readability
+  lines.push(`💰 Amount: *${buy.oceanFormatted} OCEAN*`);
+  if (buy.usdValue) {
+    lines.push(`💵 Value: ${buy.usdValue}`);
+  }
+
+  // Buyer wallet info
+  if (buy.buyerShort) {
+    lines.push(`👤 Buyer: \`${buy.buyerShort}\``);
+    if (buy.isNewHolder) {
+      lines.push(`🆕 *NEW HOLDER*`);
+      lines.push(`📊 Balance Increase: +${buy.oceanFormatted} OCEAN`);
+    } else if (buy.previousBalance && buy.newBalance) {
+      lines.push(`📊 Balance: ${buy.previousBalance} → *${buy.newBalance} OCEAN*`);
+    }
+  }
+
+  lines.push(`⛓️  Chain: ${buy.chainName}`);
+  lines.push(`🏦 DEX: ${buy.poolLabel}`);
+  lines.push(`🔗 [View Transaction](${buy.txUrl})`);
+
+  return lines.join('\n');
 }
 
 export function formatBatchAlert(buys: BuyAlert[]): string {
