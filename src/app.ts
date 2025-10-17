@@ -37,6 +37,19 @@ export function createApp(): express.Application {
     handleWebhook
   );
 
+  // Website routes for https://autobotocean.com/asi
+  app.get('/ASI', (_req, res) => {
+    res.sendFile('/var/www/html/asi_landing.html');
+  });
+
+  app.get('/ASI_Alliance_MASTER_FET_Analysis.csv', (_req, res) => {
+    res.download('/var/www/html/ASI_Alliance_MASTER_FET_Analysis.csv', 'ASI_Alliance_MASTER_FET_Analysis.csv');
+  });
+
+  app.get('/ASI_Alliance_Summary_Pivot.csv', (_req, res) => {
+    res.download('/var/www/html/ASI_Alliance_Summary_Pivot.csv', 'ASI_Alliance_Summary_Pivot.csv');
+  });
+
   app.use(notFoundHandler);
   app.use(errorHandler);
 
