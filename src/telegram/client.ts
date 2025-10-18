@@ -53,6 +53,8 @@ class TelegramClient {
     for (const config of configs) {
       if (config.enabled) {
         await this.sendBuyAlert(buy, config.chatId);
+        // Small delay between messages to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
     }
 
