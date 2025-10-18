@@ -5,6 +5,7 @@ interface RatioData {
   m5: number;
   m30: number;
   h1: number;
+  h4: number;
   d1: number;
   w1: number;
   month: number;
@@ -147,10 +148,11 @@ class RatioService {
       const now = this.calculateRatio(currentPrices.ocean, currentPrices.fet);
 
       // Get historical ratios in parallel
-      const [m5, m30, h1, d1, w1, month] = await Promise.all([
+      const [m5, m30, h1, h4, d1, w1, month] = await Promise.all([
         this.getHistoricalRatio(5),
         this.getHistoricalRatio(30),
         this.getHistoricalRatio(60),
+        this.getHistoricalRatio(240),       // 4 hours
         this.getHistoricalRatio(1440),      // 24 hours
         this.getHistoricalRatio(10080),     // 7 days
         this.getHistoricalRatio(43200),     // 30 days
@@ -161,6 +163,7 @@ class RatioService {
         m5: m5 ?? now,      // Fallback to current if historical unavailable
         m30: m30 ?? now,
         h1: h1 ?? now,
+        h4: h4 ?? now,
         d1: d1 ?? now,
         w1: w1 ?? now,
         month: month ?? now,
@@ -193,6 +196,7 @@ class RatioService {
       `⏱️ 5m:    ${formatRatio(data.m5)} : 1`,
       `⏱️ 30m:   ${formatRatio(data.m30)} : 1`,
       `⏱️ 1hr:   ${formatRatio(data.h1)} : 1`,
+      `⏱️ 4hr:   ${formatRatio(data.h4)} : 1`,
       `📅 1day:  ${formatRatio(data.d1)} : 1`,
       `📅 week:  ${formatRatio(data.w1)} : 1`,
       `📅 month: ${formatRatio(data.month)} : 1`,
