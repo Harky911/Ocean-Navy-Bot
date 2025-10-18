@@ -2,6 +2,7 @@ import TelegramBot from 'node-telegram-bot-api';
 import { configManager } from './config.js';
 import { logger } from '../utils/logger.js';
 import { env } from '../config/env.js';
+import { ratioService } from '../services/ratio.js';
 
 function isAllowedChat(chatId: string): boolean {
   // If no whitelist is configured, allow all chats (backward compatible)
@@ -47,6 +48,7 @@ export function registerCommands(bot: TelegramBot): void {
       `*Commands:*\n` +
       `/help - Show this message\n` +
       `/status - Show current settings\n` +
+      `/ratio - FET:OCEAN price ratio (public)\n` +
       `/setmin <amount> - Set minimum OCEAN (admin)\n` +
       `/enable - Enable alerts (admin)\n` +
       `/disable - Disable alerts (admin)`,
@@ -62,7 +64,8 @@ export function registerCommands(bot: TelegramBot): void {
       `🌊 *Ocean Navy Bot - Commands*\n\n` +
       `*Everyone:*\n` +
       `/help - Show this message\n` +
-      `/status - Show current settings\n\n` +
+      `/status - Show current settings\n` +
+      `/ratio - FET:OCEAN price ratio\n\n` +
       `*Admins Only:*\n` +
       `/setmin <amount> - Set min OCEAN amount\n` +
       `/enable - Enable buy alerts\n` +
@@ -141,6 +144,35 @@ export function registerCommands(bot: TelegramBot): void {
 
     await bot.sendMessage(msg.chat.id, '⏸️ OCEAN buy alerts *disabled*', { parse_mode: 'Markdown' });
     logger.info({ chatId }, 'Alerts disabled');
+  });
+
+  // PUBLIC COMMAND - No auth check
+  bot.onText(/\/ratio/, async (msg) => {
+    const chatId = msg.chat.id.toString();
+    
+    try {
+      // Show "typing" indicator
+      await bot.sendChatAction(msg.chat.id, 'typing');
+      
+      const ratioData = await ratioService.getRatioData();
+      
+      if (!ratioData) {
+        await bot.sendMessage(msg.chat.id, 
+          '❌ Unable to fetch ratio data. Please try again later.'
+        );
+        return;
+      }
+
+      const message = ratioService.formatRatioMessage(ratioData);
+      await bot.sendMessage(msg.chat.id, message, { parse_mode: 'Markdown' });
+      
+      logger.info({ chatId }, 'Ratio command executed');
+    } catch (error) {
+      logger.error({ error, chatId }, 'Failed to execute ratio command');
+      await bot.sendMessage(msg.chat.id, 
+        '❌ Error fetching ratio data. Please try again later.'
+      );
+    }
   });
 
   logger.info('Telegram commands registered');
