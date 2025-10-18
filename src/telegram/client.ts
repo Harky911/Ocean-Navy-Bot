@@ -5,6 +5,7 @@ import { formatBuyAlert, formatBatchAlert } from '../core/formatter.js';
 import { configManager } from './config.js';
 import { registerCommands } from './commands.js';
 import { logger } from '../utils/logger.js';
+import { oceanToNumber } from '../utils/bigint.js';
 
 class TelegramClient {
   private bot: TelegramBot;
@@ -34,7 +35,7 @@ class TelegramClient {
       return;
     }
 
-    const amount = parseFloat(buy.oceanFormatted);
+    const amount = oceanToNumber(buy.oceanAmount);
     if (amount < config.minOceanAlert) {
       logger.debug({ chatId: targetChatId, amount, minAmount: config.minOceanAlert }, 'Below min threshold, skipping');
       return;
