@@ -243,7 +243,7 @@ class RatioService {
   /**
    * Format ratio data into a Telegram message
    */
-  formatRatioMessage(data: RatioData, fetPrice: number, oceanPrice: number): string {
+  formatRatioMessage(data: RatioData, fetPrice?: number, oceanPrice?: number): string {
     const formatRatio = (ratio: number) => ratio.toFixed(3);
     const formatPrice = (price: number) => `$${price.toFixed(4)}`;
 
@@ -259,11 +259,16 @@ class RatioService {
       `📅 week:  ${formatRatio(data.w1)} : 1`,
       `📅 month: ${formatRatio(data.month)} : 1`,
       '',
-      `FET: ${formatPrice(fetPrice)}`,
-      `OCEAN: ${formatPrice(oceanPrice)}`,
-      '',
-      `💡 1 OCEAN = ${formatRatio(data.now)} FET`,
     ];
+
+    // Add current prices if available
+    if (fetPrice && oceanPrice) {
+      lines.push(`FET: ${formatPrice(fetPrice)}`);
+      lines.push(`OCEAN: ${formatPrice(oceanPrice)}`);
+      lines.push('');
+    }
+
+    lines.push(`💡 1 OCEAN = ${formatRatio(data.now)} FET`);
 
     return lines.join('\n');
   }

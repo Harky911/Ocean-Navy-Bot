@@ -164,14 +164,13 @@ export function registerCommands(bot: TelegramBot): void {
       }
 
       const currentPrices = ratioService.getCurrentPricesFromCache();
-      if (!currentPrices) {
-        await bot.sendMessage(msg.chat.id, 
-          '❌ Unable to fetch price data. Please try again later.'
-        );
-        return;
-      }
-
-      const message = ratioService.formatRatioMessage(ratioData, currentPrices.fet, currentPrices.ocean);
+      logger.debug({ currentPrices }, 'Current prices from cache');
+      
+      const message = ratioService.formatRatioMessage(
+        ratioData, 
+        currentPrices?.fet, 
+        currentPrices?.ocean
+      );
       await bot.sendMessage(msg.chat.id, message, { parse_mode: 'Markdown' });
       
       logger.info({ chatId }, 'Ratio command executed');
