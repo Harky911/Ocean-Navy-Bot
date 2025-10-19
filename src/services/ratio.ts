@@ -62,26 +62,25 @@ class RatioService {
   }
 
   /**
-   * Get all historical prices for a coin in one call
-   * Fetches 30 days of data and extracts all needed time points
+   * Get historical prices for a coin
    * @param coinId - 'fetch-ai' or 'ocean-protocol'
+   * @param days - Number of days (1 = 5min intervals, 30 = hourly intervals)
    */
-  private async getHistoricalPrices(coinId: string): Promise<Map<number, number> | null> {
+  private async getHistoricalPrices(coinId: string, days: number): Promise<Map<number, number> | null> {
     try {
-      // Fetch 30 days of data in one call (covers all our time ranges)
       const response = await fetch(
-        `${this.COINGECKO_HISTORY}/${coinId}/market_chart?vs_currency=usd&days=30`
+        `${this.COINGECKO_HISTORY}/${coinId}/market_chart?vs_currency=usd&days=${days}`
       );
 
       if (!response.ok) {
-        logger.error({ status: response.status, coinId }, 'CoinGecko API error (historical)');
+        logger.error({ status: response.status, coinId, days }, 'CoinGecko API error (historical)');
         return null;
       }
 
       const data = await response.json() as CoinGeckoHistoryResponse;
       
       if (!data.prices || data.prices.length === 0) {
-        logger.error({ coinId }, 'No historical price data');
+        logger.error({ coinId, days }, 'No historical price data');
         return null;
       }
 
@@ -91,9 +90,10 @@ class RatioService {
         priceMap.set(timestamp, price);
       }
 
+      logger.debug({ coinId, days, dataPoints: priceMap.size }, 'Fetched historical prices');
       return priceMap;
     } catch (error) {
-      logger.error({ error, coinId }, 'Failed to fetch historical prices');
+      logger.error({ error, coinId, days }, 'Failed to fetch historical prices');
       return null;
     }
   }
@@ -127,8 +127,14 @@ class RatioService {
 
   /**
    * Get historical ratios from price maps
+   * Uses different price maps for short (1-day) vs long (30-day) intervals
    */
-  private getHistoricalRatios(fetPrices: Map<number, number>, oceanPrices: Map<number, number>): {
+  private getHistoricalRatios(
+    fetPricesShort: Map<number, number>,
+    oceanPricesShort: Map<number, number>,
+    fetPricesLong: Map<number, number>,
+    oceanPricesLong: Map<number, number>
+  ): {
     m5: number | null;
     m30: number | null;
     h1: number | null;
@@ -137,11 +143,16 @@ class RatioService {
     w1: number | null;
     month: number | null;
   } {
-    const intervals = [
+    // Short intervals use 1-day data (5-minute granularity)
+    const shortIntervals = [
       { key: 'm5', minutes: 5 },
       { key: 'm30', minutes: 30 },
       { key: 'h1', minutes: 60 },
       { key: 'h4', minutes: 240 },
+    ];
+
+    // Long intervals use 30-day data (hourly granularity)
+    const longIntervals = [
       { key: 'd1', minutes: 1440 },
       { key: 'w1', minutes: 10080 },
       { key: 'month', minutes: 43200 },
@@ -149,9 +160,22 @@ class RatioService {
 
     const ratios: any = {};
 
-    for (const { key, minutes } of intervals) {
-      const fetPrice = this.findClosestPrice(fetPrices, minutes);
-      const oceanPrice = this.findClosestPrice(oceanPrices, minutes);
+    // Process short intervals
+    for (const { key, minutes } of shortIntervals) {
+      const fetPrice = this.findClosestPrice(fetPricesShort, minutes);
+      const oceanPrice = this.findClosestPrice(oceanPricesShort, minutes);
+
+      if (fetPrice && oceanPrice) {
+        ratios[key] = this.calculateRatio(oceanPrice, fetPrice);
+      } else {
+        ratios[key] = null;
+      }
+    }
+
+    // Process long intervals
+    for (const { key, minutes } of longIntervals) {
+      const fetPrice = this.findClosestPrice(fetPricesLong, minutes);
+      const oceanPrice = this.findClosestPrice(oceanPricesLong, minutes);
 
       if (fetPrice && oceanPrice) {
         ratios[key] = this.calculateRatio(oceanPrice, fetPrice);
@@ -182,13 +206,16 @@ class RatioService {
 
       const now = this.calculateRatio(currentPrices.ocean, currentPrices.fet);
 
-      // Fetch all historical data in just 2 API calls (one per coin)
-      const [fetPrices, oceanPrices] = await Promise.all([
-        this.getHistoricalPrices('fetch-ai'),
-        this.getHistoricalPrices('ocean-protocol'),
+      // Fetch historical data: 1-day for short intervals, 30-day for long intervals
+      // This gives us 5-minute granularity for recent data and hourly for longer periods
+      const [fetPricesShort, oceanPricesShort, fetPricesLong, oceanPricesLong] = await Promise.all([
+        this.getHistoricalPrices('fetch-ai', 1),      // 1 day = 5min intervals
+        this.getHistoricalPrices('ocean-protocol', 1), // 1 day = 5min intervals
+        this.getHistoricalPrices('fetch-ai', 30),     // 30 days = hourly intervals
+        this.getHistoricalPrices('ocean-protocol', 30), // 30 days = hourly intervals
       ]);
 
-      if (!fetPrices || !oceanPrices) {
+      if (!fetPricesShort || !oceanPricesShort || !fetPricesLong || !oceanPricesLong) {
         logger.warn('Failed to fetch historical prices, using current price for all intervals');
         return {
           now,
@@ -203,7 +230,12 @@ class RatioService {
       }
 
       // Extract all historical ratios from the fetched data
-      const historical = this.getHistoricalRatios(fetPrices, oceanPrices);
+      const historical = this.getHistoricalRatios(
+        fetPricesShort,
+        oceanPricesShort,
+        fetPricesLong,
+        oceanPricesLong
+      );
 
       const ratioData: RatioData = {
         now,

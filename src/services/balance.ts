@@ -3,7 +3,7 @@ import { mainnet, polygon } from 'viem/chains';
 import { OCEAN_TOKEN, OCEAN_TOKEN_BY_CHAIN } from '../config/constants.js';
 import { env } from '../config/env.js';
 import { logger } from '../utils/logger.js';
-import erc20Abi from '../abis/erc20.json' with { type: 'json' };
+import erc20Abi from '../abis/erc20.json' assert { type: 'json' };
 
 const clients = {
   1: createPublicClient({

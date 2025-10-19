@@ -2,7 +2,7 @@ import { decodeEventLog } from 'viem';
 import { DexLog, SwapEvent } from '../core/types.js';
 import { OCEAN_TOKEN } from '../config/constants.js';
 import { KNOWN_POOLS } from '../config/pools.js';
-import balancerVaultAbi from '../abis/balancerVault.json' with { type: 'json' };
+import balancerVaultAbi from '../abis/balancerVault.json' assert { type: 'json' };
 import { logger } from '../utils/logger.js';
 
 export function decodeBalancerV2Swap(log: DexLog): SwapEvent | null {

@@ -2,7 +2,7 @@ import { decodeEventLog } from 'viem';
 import { DexLog, SwapEvent } from '../core/types.js';
 import { OCEAN_TOKEN } from '../config/constants.js';
 import { getPoolByAddress } from '../config/pools.js';
-import univ2PoolAbi from '../abis/univ2pool.json' with { type: 'json' };
+import univ2PoolAbi from '../abis/univ2pool.json' assert { type: 'json' };
 import { logger } from '../utils/logger.js';
 
 export function decodeUniswapV2Swap(log: DexLog): SwapEvent | null {
