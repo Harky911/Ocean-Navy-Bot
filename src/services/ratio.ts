@@ -21,7 +21,11 @@ interface CoinGeckoHistoryResponse {
 }
 
 class RatioService {
-  private cache: { data: RatioData; timestamp: number } | null = null;
+  private cache: { 
+    data: RatioData; 
+    timestamp: number;
+    currentPrices?: { fet: number; ocean: number };
+  } | null = null;
   private readonly CACHE_TTL = 2 * 60 * 1000; // 2 minute cache
   private readonly COINGECKO_SIMPLE = 'https://api.coingecko.com/api/v3/simple/price';
   private readonly COINGECKO_HISTORY = 'https://api.coingecko.com/api/v3/coins';
@@ -212,16 +216,14 @@ class RatioService {
         month: historical.month ?? now,
       };
 
-      // Update cache
+      // Update cache with data and prices
       this.cache = {
         data: ratioData,
         timestamp: Date.now(),
+        currentPrices: currentPrices,
       };
 
-      logger.info({ ratioData }, 'Fetched ratio data');
-      
-      // Store current prices in cache for formatting
-      (this.cache as any).currentPrices = currentPrices;
+      logger.info({ ratioData, currentPrices }, 'Fetched ratio data with prices');
       
       return ratioData;
     } catch (error) {
@@ -234,8 +236,8 @@ class RatioService {
    * Get current prices from cache (used for formatting)
    */
   getCurrentPricesFromCache(): { fet: number; ocean: number } | null {
-    if (this.cache && (this.cache as any).currentPrices) {
-      return (this.cache as any).currentPrices;
+    if (this.cache?.currentPrices) {
+      return this.cache.currentPrices;
     }
     return null;
   }
