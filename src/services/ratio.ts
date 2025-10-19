@@ -219,6 +219,10 @@ class RatioService {
       };
 
       logger.info({ ratioData }, 'Fetched ratio data');
+      
+      // Store current prices in cache for formatting
+      (this.cache as any).currentPrices = currentPrices;
+      
       return ratioData;
     } catch (error) {
       logger.error({ error }, 'Failed to get ratio data');
@@ -227,10 +231,21 @@ class RatioService {
   }
 
   /**
+   * Get current prices from cache (used for formatting)
+   */
+  getCurrentPricesFromCache(): { fet: number; ocean: number } | null {
+    if (this.cache && (this.cache as any).currentPrices) {
+      return (this.cache as any).currentPrices;
+    }
+    return null;
+  }
+
+  /**
    * Format ratio data into a Telegram message
    */
-  formatRatioMessage(data: RatioData): string {
+  formatRatioMessage(data: RatioData, fetPrice: number, oceanPrice: number): string {
     const formatRatio = (ratio: number) => ratio.toFixed(3);
+    const formatPrice = (price: number) => `$${price.toFixed(4)}`;
 
     const lines = [
       '📊 *FET : OCEAN Ratio*',
@@ -243,6 +258,9 @@ class RatioService {
       `📅 1day:  ${formatRatio(data.d1)} : 1`,
       `📅 week:  ${formatRatio(data.w1)} : 1`,
       `📅 month: ${formatRatio(data.month)} : 1`,
+      '',
+      `FET: ${formatPrice(fetPrice)}`,
+      `OCEAN: ${formatPrice(oceanPrice)}`,
       '',
       `💡 1 OCEAN = ${formatRatio(data.now)} FET`,
     ];
