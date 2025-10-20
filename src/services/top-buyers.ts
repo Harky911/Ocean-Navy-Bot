@@ -48,6 +48,7 @@ const EXCLUDED_ADDRESSES = new Set([
   '0xdef171fe48cf0115b1d80b88dc8eab59176fee57'.toLowerCase(), // ParaSwap Augustus V6
   '0x6352a56caadc4f1e25cd6c75970fa768a3304e64'.toLowerCase(), // OpenOcean
   '0x99a58482bd75cbab83b27ec03ca68ff489b5788f'.toLowerCase(), // Cowswap
+  '0xeff6cb8b614999d130e537751ee99724d01aa167'.toLowerCase(), // Uniswap V4 Pool Manager or other contract
   ethers.ZeroAddress.toLowerCase(), // Burn/mint address
 ]);
 
