@@ -285,7 +285,7 @@ export function registerCommands(bot: TelegramBot): void {
         `🐋 Whale Count: ${result.whaleCount} wallets > $5,000`,
         `👥 Total Buyers: ${result.totalBuyers}`,
         ``,
-        `_OCEAN/WETH on Uniswap V2_`,
+        `_Across all DEXs (V2, V3, V4, aggregators)_`,
       ].join('\n');
 
       await bot.editMessageText(message, {

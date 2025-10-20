@@ -17,31 +17,43 @@ interface EtherscanResponse {
 }
 
 // ABIs (minimal)
-const FACTORY_ABI = [
-  'function getPair(address tokenA, address tokenB) external view returns (address pair)',
-];
-
-const PAIR_ABI = [
-  'event Swap(address indexed sender,uint amount0In,uint amount1In,uint amount0Out,uint amount1Out,address indexed to)',
-];
-
-const ERC20_ABI = ['function decimals() view returns (uint8)'];
-
-const CHAINLINK_ABI = [
-  'function latestRoundData() view returns (uint80,int256,uint256,uint256,uint80)',
+const ERC20_ABI = [
+  'event Transfer(address indexed from, address indexed to, uint256 value)',
+  'function decimals() view returns (uint8)',
 ];
 
 // Constants
 const OCEAN = '0x967da4048cd07ab37855c090aaf366e4ce1b9f48';
-const WETH = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2';
-const UNI_FACTORY = '0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f';
-const CHAINLINK_ETH_USD = '0x5f4ec3df9cbd43714fe2740f5e3616155c5b8419';
 const WHALE_USD_THRESHOLD = 5000;
+
+// Known pool addresses (transfers TO these are sells, not buys)
+const KNOWN_POOLS = new Set([
+  '0x9b7d8b6c0a8d6e1f5a5e7f8b5c6d3e4f5a6b7c8d'.toLowerCase(), // Uniswap V2 OCEAN/WETH
+  '0x1b84765de8b7566e4ceaf4d0fd3c5af52d3dde4f'.toLowerCase(), // Uniswap V3 OCEAN/WETH (0.3%)
+  // Add more pools as needed
+]);
+
+// Excluded addresses (routers, aggregators, contracts that shouldn't count as "buyers")
+const EXCLUDED_ADDRESSES = new Set([
+  '0x7a250d5630b4cf539739df2c5dacb4c659f2488d'.toLowerCase(), // Uniswap V2 Router
+  '0xe592427a0aece92de3edee1f18e0157c05861564'.toLowerCase(), // Uniswap V3 Router
+  '0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45'.toLowerCase(), // Uniswap V3 Router 2
+  '0xef1c6e67703c7bd7107eed8303fbe6ec2554bf6b'.toLowerCase(), // Uniswap Universal Router
+  '0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad'.toLowerCase(), // Uniswap Universal Router 2
+  '0xdef1c0ded9bec7f1a1670819833240f027b25eff'.toLowerCase(), // 0x Protocol
+  '0x1111111254eeb25477b68fb85ed929f73a960582'.toLowerCase(), // 1inch V5 Router
+  '0x1111111254fb6c44bac0bed2854e76f90643097d'.toLowerCase(), // 1inch V4 Router
+  '0x11111112542d85b3ef69ae05771c2dccff4faa26'.toLowerCase(), // 1inch V3 Router
+  '0x216b4b4ba9f3e719726886d34a177484278bfcae'.toLowerCase(), // ParaSwap
+  '0xdef171fe48cf0115b1d80b88dc8eab59176fee57'.toLowerCase(), // ParaSwap Augustus V6
+  '0x6352a56caadc4f1e25cd6c75970fa768a3304e64'.toLowerCase(), // OpenOcean
+  '0x99a58482bd75cbab83b27ec03ca68ff489b5788f'.toLowerCase(), // Cowswap
+  ethers.ZeroAddress.toLowerCase(), // Burn/mint address
+]);
 
 export interface TopBuyer {
   address: string;
   oceanAmount: number;
-  wethSpent: number;
   usdValue: number;
 }
 
@@ -50,7 +62,7 @@ export interface TopBuyersResult {
   whaleCount: number;
   totalBuyers: number;
   timePeriod: string;
-  ethUsdPrice: number;
+  oceanUsdPrice: number;
 }
 
 /**
@@ -78,7 +90,7 @@ function parseTimePeriod(period: string): number {
 }
 
 /**
- * Fetch top OCEAN buyers from Uniswap V2 OCEAN/WETH pool
+ * Fetch top OCEAN buyers by tracking Transfer events across ALL DEXs
  */
 export class TopBuyersService {
   private provider: ethers.JsonRpcProvider;
@@ -98,41 +110,18 @@ export class TopBuyersService {
       const hours = parseTimePeriod(timePeriod);
       logger.info({ timePeriod, hours }, 'Fetching top buyers');
 
-      // Get pair address
-      const factory = new ethers.Contract(UNI_FACTORY, FACTORY_ABI, this.provider);
-      const [tokenA, tokenB] = [OCEAN.toLowerCase(), WETH.toLowerCase()].sort();
-      const pairAddr = await factory.getPair(tokenA, tokenB);
+      // Get OCEAN decimals
+      const oceanContract = new ethers.Contract(OCEAN, ERC20_ABI, this.provider);
+      const oceanDecimals = await oceanContract.decimals();
 
-      if (pairAddr === ethers.ZeroAddress) {
-        logger.error('OCEAN/WETH pair not found');
+      // Get OCEAN/USD price via CoinGecko (simpler than ETH/USD + calculation)
+      const oceanUsdPrice = await this.getOceanUsdPrice();
+      if (!oceanUsdPrice) {
+        logger.error('Failed to fetch OCEAN price');
         return null;
       }
 
-      logger.debug({ pairAddr }, 'Found pair');
-
-      // Get token order
-      const token0Slot = await this.provider.call({ to: pairAddr, data: '0x0dfe1681' });
-      const token1Slot = await this.provider.call({ to: pairAddr, data: '0xd21220a7' });
-      const token0 = ethers.getAddress('0x' + token0Slot.slice(26));
-      const token1 = ethers.getAddress('0x' + token1Slot.slice(26));
-      const oceanIsToken0 = token0.toLowerCase() === OCEAN.toLowerCase();
-
-      logger.debug({ token0, token1, oceanIsToken0 }, 'Token order');
-
-      // Get decimals
-      const oceanContract = new ethers.Contract(OCEAN, ERC20_ABI, this.provider);
-      const wethContract = new ethers.Contract(WETH, ERC20_ABI, this.provider);
-      const [oceanDec, wethDec] = await Promise.all([
-        oceanContract.decimals(),
-        wethContract.decimals(),
-      ]);
-
-      // Get ETH/USD price from Chainlink
-      const feed = new ethers.Contract(CHAINLINK_ETH_USD, CHAINLINK_ABI, this.provider);
-      const [, answer] = await feed.latestRoundData();
-      const ethUsd = Number(answer) / 1e8;
-
-      logger.debug({ ethUsd }, 'ETH/USD price');
+      logger.debug({ oceanUsdPrice }, 'OCEAN/USD price');
 
       // Calculate block range
       const latestBlock = await this.provider.getBlockNumber();
@@ -148,11 +137,11 @@ export class TopBuyersService {
 
       logger.debug({ fromBlock, latestBlock, fromTs }, 'Block range');
 
-      // Fetch swap logs using Etherscan API
-      const swapTopic = ethers.id('Swap(address,uint256,uint256,uint256,uint256,address)');
+      // Fetch ALL OCEAN Transfer events (no sender filter)
+      const transferTopic = ethers.id('Transfer(address,address,uint256)');
       const logs = await this.fetchLogsViaEtherscan(
-        pairAddr,
-        swapTopic,
+        OCEAN,
+        transferTopic,
         fromBlock,
         latestBlock,
         hours
@@ -163,11 +152,11 @@ export class TopBuyersService {
         return null;
       }
 
-      logger.info({ logCount: logs.length }, 'Fetched swap logs');
+      logger.info({ logCount: logs.length }, 'Fetched transfer logs');
 
-      // Process swaps and aggregate by buyer
-      const iface = new ethers.Interface(PAIR_ABI);
-      const byBuyer = new Map<string, { oceanOut: number; wethIn: number }>();
+      // Process transfers and aggregate by buyer
+      const iface = new ethers.Interface(ERC20_ABI);
+      const byBuyer = new Map<string, number>();
 
       for (const log of logs) {
         // Filter by timestamp
@@ -181,60 +170,50 @@ export class TopBuyersService {
 
         if (!parsed) continue;
 
-        const { amount0In, amount1In, amount0Out, amount1Out, to } = parsed.args;
+        const { from: sender, to: recipient, value } = parsed.args;
+        const oceanAmount = Number(ethers.formatUnits(value, oceanDecimals));
 
-        // Normalize amounts
-        const a0in = Number(
-          ethers.formatUnits(amount0In, oceanIsToken0 ? oceanDec : wethDec)
-        );
-        const a1in = Number(
-          ethers.formatUnits(amount1In, oceanIsToken0 ? wethDec : oceanDec)
-        );
-        const a0out = Number(
-          ethers.formatUnits(amount0Out, oceanIsToken0 ? oceanDec : wethDec)
-        );
-        const a1out = Number(
-          ethers.formatUnits(amount1Out, oceanIsToken0 ? wethDec : oceanDec)
-        );
-
-        let oceanOut = 0,
-          wethIn = 0;
-
-        if (oceanIsToken0) {
-          oceanOut = a0out;
-          wethIn = a1in;
-        } else {
-          oceanOut = a1out;
-          wethIn = a0in;
+        // Skip mints/burns (zero address)
+        if (
+          sender.toLowerCase() === ethers.ZeroAddress.toLowerCase() ||
+          recipient.toLowerCase() === ethers.ZeroAddress.toLowerCase()
+        ) {
+          continue;
         }
 
-        if (oceanOut > 0) {
-          const key = ethers.getAddress(to);
-          const prev = byBuyer.get(key) || { oceanOut: 0, wethIn: 0 };
-          prev.oceanOut += oceanOut;
-          prev.wethIn += wethIn;
-          byBuyer.set(key, prev);
+        // Skip if recipient is an excluded router/aggregator
+        if (EXCLUDED_ADDRESSES.has(recipient.toLowerCase())) {
+          continue;
         }
+
+        // Skip if recipient is a known pool (this is a sell, not a buy)
+        if (KNOWN_POOLS.has(recipient.toLowerCase())) {
+          continue;
+        }
+
+        // This is a buy! Count it
+        const key = ethers.getAddress(recipient);
+        const prev = byBuyer.get(key) || 0;
+        byBuyer.set(key, prev + oceanAmount);
       }
 
-      logger.info({ uniqueBuyers: byBuyer.size }, 'Processed swaps');
+      logger.info({ uniqueBuyers: byBuyer.size }, 'Processed transfers');
 
       // Calculate whale count
       let whaleCount = 0;
-      for (const [, v] of byBuyer) {
-        const usd = v.wethIn * ethUsd;
+      for (const [, oceanAmount] of byBuyer) {
+        const usd = oceanAmount * oceanUsdPrice;
         if (usd >= WHALE_USD_THRESHOLD) whaleCount++;
       }
 
       // Get top 5 buyers
       const topBuyers = [...byBuyer.entries()]
-        .sort((a, b) => b[1].oceanOut - a[1].oceanOut)
+        .sort((a, b) => b[1] - a[1])
         .slice(0, 5)
-        .map(([address, v]) => ({
+        .map(([address, oceanAmount]) => ({
           address,
-          oceanAmount: v.oceanOut,
-          wethSpent: v.wethIn,
-          usdValue: v.wethIn * ethUsd,
+          oceanAmount,
+          usdValue: oceanAmount * oceanUsdPrice,
         }));
 
       return {
@@ -242,7 +221,7 @@ export class TopBuyersService {
         whaleCount,
         totalBuyers: byBuyer.size,
         timePeriod,
-        ethUsdPrice: ethUsd,
+        oceanUsdPrice,
       };
     } catch (error) {
       logger.error({ error, timePeriod }, 'Failed to get top buyers');
@@ -251,11 +230,33 @@ export class TopBuyersService {
   }
 
   /**
+   * Get OCEAN/USD price from CoinGecko
+   */
+  private async getOceanUsdPrice(): Promise<number | null> {
+    try {
+      const response = await fetch(
+        'https://api.coingecko.com/api/v3/simple/price?ids=ocean-protocol&vs_currencies=usd'
+      );
+
+      if (!response.ok) {
+        logger.error({ status: response.status }, 'CoinGecko API error');
+        return null;
+      }
+
+      const data = (await response.json()) as { 'ocean-protocol'?: { usd?: number } };
+      return data['ocean-protocol']?.usd || null;
+    } catch (error) {
+      logger.error({ error }, 'Failed to fetch OCEAN price');
+      return null;
+    }
+  }
+
+  /**
    * Fetch logs via Etherscan API (handles large block ranges)
    */
   private async fetchLogsViaEtherscan(
-    pairAddr: string,
-    swapTopic: string,
+    tokenAddress: string,
+    transferTopic: string,
     fromBlock: number,
     toBlock: number,
     hours: number
@@ -286,7 +287,8 @@ export class TopBuyersService {
         );
         const chunkToBlock = i === 0 ? toBlock : toBlock - Math.ceil((i * CHUNK_HOURS * 3600) / 12);
 
-        const url = `https://api.etherscan.io/v2/api?chainid=1&module=logs&action=getLogs&fromBlock=${chunkFromBlock}&toBlock=${chunkToBlock}&address=${pairAddr}&topic0=${swapTopic}&apikey=${env.ETHERSCAN_API_KEY}`;
+        // Use Etherscan V2 API - fetch ALL OCEAN transfers (no topic1 filter)
+        const url = `https://api.etherscan.io/v2/api?chainid=1&module=logs&action=getLogs&fromBlock=${chunkFromBlock}&toBlock=${chunkToBlock}&address=${tokenAddress}&topic0=${transferTopic}&apikey=${env.ETHERSCAN_API_KEY}`;
 
         logger.debug({ chunk: i + 1, numChunks, chunkFromBlock, chunkToBlock }, 'Fetching chunk');
 
@@ -323,4 +325,3 @@ export class TopBuyersService {
 }
 
 export const topBuyersService = new TopBuyersService();
-
