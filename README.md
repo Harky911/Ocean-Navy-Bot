@@ -75,6 +75,9 @@ TELEGRAM_POLLING=true
 # Alchemy (for RPC & balance queries)
 ALCHEMY_API_KEY=your-alchemy-api-key-here
 
+# Etherscan (for historical data queries)
+ETHERSCAN_API_KEY=your-etherscan-api-key-here
+
 # Alerts
 DEBOUNCE_MS=0
 MIN_OCEAN_ALERT=1.0
@@ -169,6 +172,8 @@ server {
 - `/start` - Welcome message and current settings
 - `/help` - Show all commands
 - `/status` - View current alert settings for this chat
+- `/ratio` - Show FET:OCEAN price ratio with historical data
+- `/top` - Show top OCEAN buyers by time period (5m, 30m, 1h, 4h, 12h, 1d, 7d)
 
 ### Admins Only
 
