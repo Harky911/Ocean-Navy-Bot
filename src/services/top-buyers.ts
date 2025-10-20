@@ -8,6 +8,7 @@ interface EtherscanLog {
   topics: string[];
   data: string;
   timeStamp: string;
+  transactionHash: string;
 }
 
 interface EtherscanResponse {
@@ -24,21 +25,12 @@ const ERC20_ABI = [
 
 // Constants
 const OCEAN = '0x967da4048cd07ab37855c090aaf366e4ce1b9f48';
+const WETH = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2';
 const WHALE_USD_THRESHOLD = 5000;
+const UNI_V2_PAIR = '0x9b7dad79fc16106b47a3dab791f389c167e15eb0'; // OCEAN/WETH
 
-// Known OCEAN pool addresses (transfers FROM these are buys)
-const KNOWN_OCEAN_POOLS = new Set([
-  // Ethereum
-  '0x9b7dad79fc16106b47a3dab791f389c167e15eb0'.toLowerCase(), // Uniswap V2 OCEAN/WETH
-  '0x283e2e83b7f3e297c4b7c02114ab0196b001a109'.toLowerCase(), // Uniswap V3 OCEAN/WETH 0.3%
-  '0x98785fda382725d2d6b5022bf78b30eeaefdc387'.toLowerCase(), // Uniswap V3 OCEAN/USDT 0.3%
-  '0xba12222222228d8ba445958a75a0704d566bf2c8'.toLowerCase(), // Balancer V2 Vault
-  // Polygon
-  '0x5a94f81d25c73eddbdd84b84e8f6d36c58270510'.toLowerCase(), // QuickSwap OCEAN/WMATIC
-]);
-
-// Intermediary contracts (routers, position managers) that should NOT count as buyers
-const INTERMEDIARY_CONTRACTS = new Set([
+// Known router/aggregator addresses to exclude as buyers
+const EXCLUDED_ADDRESSES = new Set([
   '0x7a250d5630b4cf539739df2c5dacb4c659f2488d'.toLowerCase(), // Uniswap V2 Router
   '0xe592427a0aece92de3edee1f18e0157c05861564'.toLowerCase(), // Uniswap V3 Router
   '0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45'.toLowerCase(), // Uniswap V3 Router 2
@@ -94,7 +86,7 @@ function parseTimePeriod(period: string): number {
 }
 
 /**
- * Fetch top OCEAN buyers by tracking Transfer events across ALL DEXs
+ * Fetch top OCEAN buyers by tracking NET OCEAN balance changes across ALL transactions
  */
 export class TopBuyersService {
   private provider: ethers.JsonRpcProvider;
@@ -106,28 +98,22 @@ export class TopBuyersService {
   }
 
   /**
-   * Get top buyers for a time period
-   * @param timePeriod - Time period string (e.g., "5m", "1h", "1d")
+   * Get top OCEAN buyers for a time period
    */
   async getTopBuyers(timePeriod: string): Promise<TopBuyersResult | null> {
     try {
       const hours = parseTimePeriod(timePeriod);
       logger.info({ timePeriod, hours }, 'Fetching top buyers');
 
-      // Get OCEAN decimals
-      const oceanContract = new ethers.Contract(OCEAN, ERC20_ABI, this.provider);
-      const oceanDecimals = await oceanContract.decimals();
-
-      // Get OCEAN/USD price via CoinGecko (simpler than ETH/USD + calculation)
+      // Get OCEAN/USD price
       const oceanUsdPrice = await this.getOceanUsdPrice();
       if (!oceanUsdPrice) {
-        logger.error('Failed to fetch OCEAN price');
+        logger.error('Failed to get OCEAN/USD price');
         return null;
       }
-
       logger.debug({ oceanUsdPrice }, 'OCEAN/USD price');
 
-      // Calculate block range
+      // Get time range
       const latestBlock = await this.provider.getBlockNumber();
       const latest = await this.provider.getBlock(latestBlock);
       if (!latest) {
@@ -139,34 +125,47 @@ export class TopBuyersService {
       const estBlocks = Math.ceil((hours * 3600) / 12);
       const fromBlock = Math.max(0, latestBlock - estBlocks - 2000);
 
-      logger.debug({ fromBlock, latestBlock, fromTs }, 'Block range');
+      logger.debug({ fromBlock, toBlock: latestBlock, hours }, 'Block range');
 
-      // Fetch ALL OCEAN Transfer events (no sender filter)
-      const transferTopic = ethers.id('Transfer(address,address,uint256)');
-      const logs = await this.fetchLogsViaEtherscan(
+      // Get OCEAN decimals
+      const oceanContract = new ethers.Contract(OCEAN, ERC20_ABI, this.provider);
+      const oceanDecimals = Number(await oceanContract.decimals());
+
+      // Fetch ALL OCEAN Transfer events
+      const oceanLogs = await this.fetchLogsViaEtherscan(
         OCEAN,
-        transferTopic,
         fromBlock,
         latestBlock,
-        hours
+        'Transfer'
       );
 
-      if (!logs) {
-        logger.error('Failed to fetch logs');
+      if (!oceanLogs) {
+        logger.error('Failed to fetch OCEAN transfer logs');
         return null;
       }
 
-      logger.info({ logCount: logs.length }, 'Fetched transfer logs');
+      logger.info({ oceanLogCount: oceanLogs.length }, 'Fetched OCEAN transfer logs');
 
-      // Process transfers and aggregate by buyer
+      // Fetch WETH transfers involving the OCEAN/WETH pair to identify swap transactions
+      const wethLogs = await this.fetchWethPairLogs(fromBlock, latestBlock);
+      const wethTxSet = new Set(wethLogs.map(log => log.transactionHash.toLowerCase()));
+
+      logger.info({ wethTxCount: wethTxSet.size }, 'Fetched WETH swap transactions');
+
+      // Step 1: Group OCEAN transfers by transaction
       const iface = new ethers.Interface(ERC20_ABI);
-      const byBuyer = new Map<string, number>();
-      const unknownSenders = new Set<string>();
+      const oceanByTx = new Map<string, Array<{ from: string; to: string; amount: number }>>();
 
-      for (const log of logs) {
-        // Filter by timestamp
-        const ts = log.timeStamp || (await this.provider.getBlock(log.blockNumber))?.timestamp || 0;
+      for (const log of oceanLogs) {
+        const ts = parseInt(log.timeStamp, 16);
         if (ts < fromTs) continue;
+
+        const txHash = log.transactionHash?.toLowerCase();
+        if (!txHash) continue;
+
+        if (!oceanByTx.has(txHash)) {
+          oceanByTx.set(txHash, []);
+        }
 
         const parsed = iface.parseLog({
           topics: log.topics as string[],
@@ -175,38 +174,76 @@ export class TopBuyersService {
 
         if (!parsed) continue;
 
-        const { from: sender, to: recipient, value } = parsed.args;
-        const oceanAmount = Number(ethers.formatUnits(value, oceanDecimals));
-
-        // Count transfers FROM known OCEAN pools OR from intermediary contracts
-        const isFromPool = KNOWN_OCEAN_POOLS.has(sender.toLowerCase());
-        const isFromIntermediary = INTERMEDIARY_CONTRACTS.has(sender.toLowerCase());
-
-        if (!isFromPool && !isFromIntermediary) {
-          unknownSenders.add(sender.toLowerCase());
-          continue;
-        }
-
-        // Skip if recipient is zero address (burn)
-        if (recipient.toLowerCase() === ethers.ZeroAddress.toLowerCase()) {
-          continue;
-        }
-
-        // Skip if recipient is another intermediary (still in routing)
-        if (INTERMEDIARY_CONTRACTS.has(recipient.toLowerCase())) {
-          continue;
-        }
-
-        // This is a buy! Either direct from pool or final hop from intermediary
-        const key = ethers.getAddress(recipient);
-        const prev = byBuyer.get(key) || 0;
-        byBuyer.set(key, prev + oceanAmount);
+        oceanByTx.get(txHash)!.push({
+          from: ethers.getAddress(parsed.args.from),
+          to: ethers.getAddress(parsed.args.to),
+          amount: Number(ethers.formatUnits(parsed.args.value, oceanDecimals)),
+        });
       }
 
-      logger.info({ uniqueBuyers: byBuyer.size, unknownSendersCount: unknownSenders.size }, 'Processed transfers');
-      if (unknownSenders.size > 0) {
-        logger.debug({ unknownSenders: Array.from(unknownSenders).slice(0, 10) }, 'Unknown sender addresses (possible missing pools)');
+      logger.info({ uniqueTxCount: oceanByTx.size }, 'Grouped OCEAN transfers by transaction');
+
+      // Step 2: Calculate NET OCEAN movement for each address across ALL transactions
+      const netOceanByAddress = new Map<string, number>();
+
+      for (const [, oceanTransfers] of oceanByTx) {
+        for (const transfer of oceanTransfers) {
+          const { from, to, amount } = transfer;
+
+          // Track all receives
+          if (to !== ethers.ZeroAddress) {
+            const toNet = netOceanByAddress.get(to) || 0;
+            netOceanByAddress.set(to, toNet + amount);
+          }
+
+          // Track all sends
+          if (from !== ethers.ZeroAddress) {
+            const fromNet = netOceanByAddress.get(from) || 0;
+            netOceanByAddress.set(from, fromNet - amount);
+          }
+        }
       }
+
+      // Step 3: Filter to only addresses involved in swap-like transactions
+      const swapAddresses = new Set<string>();
+
+      for (const [txHash, oceanTransfers] of oceanByTx) {
+        // A transaction is likely a swap if:
+        const hasWeth = wethTxSet.has(txHash);
+        const multipleOceanMoves = oceanTransfers.length >= 2;
+        const largeAmount = oceanTransfers.some(t => t.amount > 100);
+
+        if (!hasWeth && !multipleOceanMoves && !largeAmount) continue;
+
+        // Mark all addresses in this swap transaction
+        for (const transfer of oceanTransfers) {
+          swapAddresses.add(transfer.to);
+        }
+      }
+
+      logger.info({ swapAddressCount: swapAddresses.size }, 'Identified swap participants');
+
+      // Step 4: Build final buyer list with NET positive addresses
+      const byBuyer = new Map<string, number>();
+
+      for (const [address, netAmount] of netOceanByAddress) {
+        // Must have been involved in a swap transaction
+        if (!swapAddresses.has(address)) continue;
+
+        // Must have NET positive OCEAN (bought more than sold)
+        if (netAmount <= 10) continue;
+
+        // Skip routers
+        if (EXCLUDED_ADDRESSES.has(address.toLowerCase())) continue;
+
+        // Skip pools
+        if (address.toLowerCase() === UNI_V2_PAIR.toLowerCase()) continue;
+
+        // Count as buyer
+        byBuyer.set(address, netAmount);
+      }
+
+      logger.info({ uniqueBuyers: byBuyer.size }, 'Processed buyers with NET positive OCEAN');
 
       // Calculate whale count
       let whaleCount = 0;
@@ -263,68 +300,87 @@ export class TopBuyersService {
   }
 
   /**
+   * Fetch WETH transfer logs involving the OCEAN/WETH pair
+   */
+  private async fetchWethPairLogs(fromBlock: number, toBlock: number): Promise<EtherscanLog[]> {
+    const allLogs: EtherscanLog[] = [];
+    const transferTopic = ethers.id('Transfer(address,address,uint256)');
+    const pairAddrPadded = ethers.zeroPadValue(UNI_V2_PAIR, 32);
+
+    // Split into 6-hour chunks
+    const CHUNK_HOURS = 6;
+    const totalHours = Math.ceil(((toBlock - fromBlock) * 12) / 3600);
+    const numChunks = Math.ceil(totalHours / CHUNK_HOURS);
+
+    for (let i = 0; i < numChunks; i++) {
+      const chunkFromBlock = Math.max(fromBlock, toBlock - Math.ceil(((i + 1) * CHUNK_HOURS * 3600) / 12) - 2000);
+      const chunkToBlock = i === 0 ? toBlock : toBlock - Math.ceil((i * CHUNK_HOURS * 3600) / 12);
+
+      // WETH transfers FROM pair (OCEAN buys)
+      const fromUrl = `https://api.etherscan.io/v2/api?chainid=1&module=logs&action=getLogs&fromBlock=${chunkFromBlock}&toBlock=${chunkToBlock}&address=${WETH}&topic0=${transferTopic}&topic1=${pairAddrPadded}&apikey=${env.ETHERSCAN_API_KEY}`;
+
+      const fromResponse = await fetch(fromUrl);
+      const fromData = (await fromResponse.json()) as EtherscanResponse;
+
+      if (fromData.status === '1' && Array.isArray(fromData.result)) {
+        allLogs.push(...(fromData.result as EtherscanLog[]));
+      }
+
+      await new Promise(r => setTimeout(r, 250));
+
+      // WETH transfers TO pair (OCEAN sells)
+      const toUrl = `https://api.etherscan.io/v2/api?chainid=1&module=logs&action=getLogs&fromBlock=${chunkFromBlock}&toBlock=${chunkToBlock}&address=${WETH}&topic0=${transferTopic}&topic2=${pairAddrPadded}&apikey=${env.ETHERSCAN_API_KEY}`;
+
+      const toResponse = await fetch(toUrl);
+      const toData = (await toResponse.json()) as EtherscanResponse;
+
+      if (toData.status === '1' && Array.isArray(toData.result)) {
+        allLogs.push(...(toData.result as EtherscanLog[]));
+      }
+
+      if (i < numChunks - 1) await new Promise(r => setTimeout(r, 250));
+    }
+
+    return allLogs;
+  }
+
+  /**
    * Fetch logs via Etherscan API (handles large block ranges)
    */
   private async fetchLogsViaEtherscan(
     tokenAddress: string,
-    transferTopic: string,
     fromBlock: number,
     toBlock: number,
-    hours: number
-  ): Promise<
-    Array<{
-      blockNumber: number;
-      topics: string[];
-      data: string;
-      timeStamp?: number;
-    }>
-    | null
-  > {
+    eventName: string
+  ): Promise<EtherscanLog[] | null> {
     try {
+      const allLogs: EtherscanLog[] = [];
+      const eventTopic = ethers.id(`${eventName}(address,address,uint256)`);
+
       // Split into 6-hour chunks to avoid 1000-event limit
       const CHUNK_HOURS = 6;
-      const numChunks = Math.ceil(hours / CHUNK_HOURS);
-      const allLogs: Array<{
-        blockNumber: number;
-        topics: string[];
-        data: string;
-        timeStamp?: number;
-      }> = [];
+      const totalHours = Math.ceil(((toBlock - fromBlock) * 12) / 3600);
+      const numChunks = Math.ceil(totalHours / CHUNK_HOURS);
 
       for (let i = 0; i < numChunks; i++) {
-        const chunkFromBlock = Math.max(
-          fromBlock,
-          toBlock - Math.ceil(((i + 1) * CHUNK_HOURS * 3600) / 12) - 2000
-        );
+        const chunkFromBlock = Math.max(fromBlock, toBlock - Math.ceil(((i + 1) * CHUNK_HOURS * 3600) / 12) - 2000);
         const chunkToBlock = i === 0 ? toBlock : toBlock - Math.ceil((i * CHUNK_HOURS * 3600) / 12);
 
-        // Use Etherscan V2 API - fetch ALL OCEAN transfers (no topic1 filter)
-        const url = `https://api.etherscan.io/v2/api?chainid=1&module=logs&action=getLogs&fromBlock=${chunkFromBlock}&toBlock=${chunkToBlock}&address=${tokenAddress}&topic0=${transferTopic}&apikey=${env.ETHERSCAN_API_KEY}`;
+        const url = `https://api.etherscan.io/v2/api?chainid=1&module=logs&action=getLogs&fromBlock=${chunkFromBlock}&toBlock=${chunkToBlock}&address=${tokenAddress}&topic0=${eventTopic}&apikey=${env.ETHERSCAN_API_KEY}`;
 
-        logger.debug({ chunk: i + 1, numChunks, chunkFromBlock, chunkToBlock }, 'Fetching chunk');
+        logger.debug({ chunk: i + 1, total: numChunks, fromBlock: chunkFromBlock, toBlock: chunkToBlock }, 'Fetching chunk');
 
         const response = await fetch(url);
         const data = (await response.json()) as EtherscanResponse;
 
         if (data.status === '1' && Array.isArray(data.result)) {
-          const chunkLogs = data.result.map((log) => ({
-            blockNumber: parseInt(log.blockNumber, 16),
-            topics: log.topics,
-            data: log.data,
-            timeStamp: parseInt(log.timeStamp, 16),
-          }));
-
-          logger.debug({ chunkLogs: chunkLogs.length }, 'Chunk fetched');
-          allLogs.push(...chunkLogs);
-        } else {
-          logger.error({ message: data.message, result: data.result }, 'Etherscan API error');
-          return null;
+          allLogs.push(...(data.result as EtherscanLog[]));
+        } else if (data.message) {
+          logger.warn({ message: data.message, chunk: i + 1 }, 'Etherscan API warning');
         }
 
         // Respect rate limits (5 calls/sec)
-        if (i < numChunks - 1) {
-          await new Promise((r) => setTimeout(r, 250));
-        }
+        if (i < numChunks - 1) await new Promise(r => setTimeout(r, 250));
       }
 
       return allLogs;
