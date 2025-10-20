@@ -310,11 +310,17 @@ export class TopBuyersService {
     // Split into 6-hour chunks
     const CHUNK_HOURS = 6;
     const totalHours = Math.ceil(((toBlock - fromBlock) * 12) / 3600);
-    const numChunks = Math.ceil(totalHours / CHUNK_HOURS);
+    const numChunks = Math.max(1, Math.ceil(totalHours / CHUNK_HOURS)); // At least 1 chunk
 
     for (let i = 0; i < numChunks; i++) {
       const chunkFromBlock = Math.max(fromBlock, toBlock - Math.ceil(((i + 1) * CHUNK_HOURS * 3600) / 12) - 2000);
       const chunkToBlock = i === 0 ? toBlock : toBlock - Math.ceil((i * CHUNK_HOURS * 3600) / 12);
+
+      // Skip if invalid range
+      if (chunkFromBlock >= chunkToBlock) {
+        logger.warn({ chunkFromBlock, chunkToBlock }, 'Skipping invalid WETH block range');
+        continue;
+      }
 
       // WETH transfers FROM pair (OCEAN buys)
       const fromUrl = `https://api.etherscan.io/v2/api?chainid=1&module=logs&action=getLogs&fromBlock=${chunkFromBlock}&toBlock=${chunkToBlock}&address=${WETH}&topic0=${transferTopic}&topic1=${pairAddrPadded}&apikey=${env.ETHERSCAN_API_KEY}`;
@@ -324,6 +330,8 @@ export class TopBuyersService {
 
       if (fromData.status === '1' && Array.isArray(fromData.result)) {
         allLogs.push(...(fromData.result as EtherscanLog[]));
+      } else if (fromData.message) {
+        logger.warn({ message: fromData.message }, 'WETH FROM pair API warning');
       }
 
       await new Promise(r => setTimeout(r, 250));
@@ -336,11 +344,14 @@ export class TopBuyersService {
 
       if (toData.status === '1' && Array.isArray(toData.result)) {
         allLogs.push(...(toData.result as EtherscanLog[]));
+      } else if (toData.message) {
+        logger.warn({ message: toData.message }, 'WETH TO pair API warning');
       }
 
       if (i < numChunks - 1) await new Promise(r => setTimeout(r, 250));
     }
 
+    logger.info({ totalWethLogs: allLogs.length, numChunks }, 'Fetched WETH pair logs');
     return allLogs;
   }
 
@@ -360,11 +371,17 @@ export class TopBuyersService {
       // Split into 6-hour chunks to avoid 1000-event limit
       const CHUNK_HOURS = 6;
       const totalHours = Math.ceil(((toBlock - fromBlock) * 12) / 3600);
-      const numChunks = Math.ceil(totalHours / CHUNK_HOURS);
+      const numChunks = Math.max(1, Math.ceil(totalHours / CHUNK_HOURS)); // At least 1 chunk
 
       for (let i = 0; i < numChunks; i++) {
         const chunkFromBlock = Math.max(fromBlock, toBlock - Math.ceil(((i + 1) * CHUNK_HOURS * 3600) / 12) - 2000);
         const chunkToBlock = i === 0 ? toBlock : toBlock - Math.ceil((i * CHUNK_HOURS * 3600) / 12);
+
+        // Skip if invalid range
+        if (chunkFromBlock >= chunkToBlock) {
+          logger.warn({ chunkFromBlock, chunkToBlock }, 'Skipping invalid block range');
+          continue;
+        }
 
         const url = `https://api.etherscan.io/v2/api?chainid=1&module=logs&action=getLogs&fromBlock=${chunkFromBlock}&toBlock=${chunkToBlock}&address=${tokenAddress}&topic0=${eventTopic}&apikey=${env.ETHERSCAN_API_KEY}`;
 
@@ -376,13 +393,14 @@ export class TopBuyersService {
         if (data.status === '1' && Array.isArray(data.result)) {
           allLogs.push(...(data.result as EtherscanLog[]));
         } else if (data.message) {
-          logger.warn({ message: data.message, chunk: i + 1 }, 'Etherscan API warning');
+          logger.warn({ message: data.message, chunk: i + 1, url: url.replace(env.ETHERSCAN_API_KEY, 'XXX') }, 'Etherscan API warning');
         }
 
         // Respect rate limits (5 calls/sec)
         if (i < numChunks - 1) await new Promise(r => setTimeout(r, 250));
       }
 
+      logger.info({ totalLogs: allLogs.length, numChunks }, 'Fetched logs via Etherscan');
       return allLogs;
     } catch (error) {
       logger.error({ error }, 'Failed to fetch logs via Etherscan');
