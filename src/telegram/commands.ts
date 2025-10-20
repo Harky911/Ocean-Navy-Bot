@@ -210,7 +210,7 @@ export function registerCommands(bot: TelegramBot): void {
 
       await bot.sendMessage(
         msg.chat.id,
-        '🏆 *Top OCEAN Buyers - OCEAN/WETH*\n\nSelect time period:',
+        '🏆 *Top OCEAN Buyers*\n\nSelect time period:',
         {
           parse_mode: 'Markdown',
           reply_markup: keyboard,
