@@ -37,6 +37,24 @@ const KNOWN_OCEAN_POOLS = new Set([
   '0x5a94f81d25c73eddbdd84b84e8f6d36c58270510'.toLowerCase(), // QuickSwap OCEAN/WMATIC
 ]);
 
+// Intermediary contracts (routers, position managers) that should NOT count as buyers
+const INTERMEDIARY_CONTRACTS = new Set([
+  '0x7a250d5630b4cf539739df2c5dacb4c659f2488d'.toLowerCase(), // Uniswap V2 Router
+  '0xe592427a0aece92de3edee1f18e0157c05861564'.toLowerCase(), // Uniswap V3 Router
+  '0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45'.toLowerCase(), // Uniswap V3 Router 2
+  '0xef1c6e67703c7bd7107eed8303fbe6ec2554bf6b'.toLowerCase(), // Uniswap Universal Router
+  '0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad'.toLowerCase(), // Uniswap Universal Router 2
+  '0xeff6cb8b614999d130e537751ee99724d01aa167'.toLowerCase(), // Uniswap V4 Position Manager
+  '0xdef1c0ded9bec7f1a1670819833240f027b25eff'.toLowerCase(), // 0x Protocol
+  '0x1111111254eeb25477b68fb85ed929f73a960582'.toLowerCase(), // 1inch V5 Router
+  '0x1111111254fb6c44bac0bed2854e76f90643097d'.toLowerCase(), // 1inch V4 Router
+  '0x11111112542d85b3ef69ae05771c2dccff4faa26'.toLowerCase(), // 1inch V3 Router
+  '0x216b4b4ba9f3e719726886d34a177484278bfcae'.toLowerCase(), // ParaSwap
+  '0xdef171fe48cf0115b1d80b88dc8eab59176fee57'.toLowerCase(), // ParaSwap Augustus V6
+  '0x6352a56caadc4f1e25cd6c75970fa768a3304e64'.toLowerCase(), // OpenOcean
+  '0x99a58482bd75cbab83b27ec03ca68ff489b5788f'.toLowerCase(), // Cowswap
+]);
+
 export interface TopBuyer {
   address: string;
   oceanAmount: number;
@@ -143,6 +161,7 @@ export class TopBuyersService {
       // Process transfers and aggregate by buyer
       const iface = new ethers.Interface(ERC20_ABI);
       const byBuyer = new Map<string, number>();
+      const unknownSenders = new Set<string>();
 
       for (const log of logs) {
         // Filter by timestamp
@@ -161,6 +180,7 @@ export class TopBuyersService {
 
         // Only count transfers FROM known OCEAN pools (these are actual DEX buys)
         if (!KNOWN_OCEAN_POOLS.has(sender.toLowerCase())) {
+          unknownSenders.add(sender.toLowerCase());
           continue;
         }
 
@@ -169,13 +189,21 @@ export class TopBuyersService {
           continue;
         }
 
-        // This is a buy from a pool! Count it
+        // Skip if recipient is an intermediary contract (router, position manager, etc.)
+        if (INTERMEDIARY_CONTRACTS.has(recipient.toLowerCase())) {
+          continue;
+        }
+
+        // This is a buy from a pool to a real wallet! Count it
         const key = ethers.getAddress(recipient);
         const prev = byBuyer.get(key) || 0;
         byBuyer.set(key, prev + oceanAmount);
       }
 
-      logger.info({ uniqueBuyers: byBuyer.size }, 'Processed transfers');
+      logger.info({ uniqueBuyers: byBuyer.size, unknownSendersCount: unknownSenders.size }, 'Processed transfers');
+      if (unknownSenders.size > 0) {
+        logger.debug({ unknownSenders: Array.from(unknownSenders).slice(0, 10) }, 'Unknown sender addresses (possible missing pools)');
+      }
 
       // Calculate whale count
       let whaleCount = 0;
@@ -193,6 +221,8 @@ export class TopBuyersService {
           oceanAmount,
           usdValue: oceanAmount * oceanUsdPrice,
         }));
+
+      logger.debug({ topBuyers: topBuyers.map(b => ({ addr: b.address, ocean: b.oceanAmount.toFixed(2) })) }, 'Top 5 buyers');
 
       return {
         topBuyers,
