@@ -3,6 +3,7 @@ import { configManager } from './config.js';
 import { logger } from '../utils/logger.js';
 import { env } from '../config/env.js';
 import { ratioService } from '../services/ratio.js';
+import { topBuyersService } from '../services/top-buyers.js';
 
 function isAllowedChat(chatId: string): boolean {
   // If no whitelist is configured, allow all chats (backward compatible)
@@ -49,6 +50,7 @@ export function registerCommands(bot: TelegramBot): void {
       `/help - Show this message\n` +
       `/status - Show current settings\n` +
       `/ratio - FET:OCEAN price ratio (public)\n` +
+      `/top - Top OCEAN buyers (public)\n` +
       `/setmin <amount> - Set minimum OCEAN (admin)\n` +
       `/enable - Enable alerts (admin)\n` +
       `/disable - Disable alerts (admin)`,
@@ -65,7 +67,8 @@ export function registerCommands(bot: TelegramBot): void {
       `*Everyone:*\n` +
       `/help - Show this message\n` +
       `/status - Show current settings\n` +
-      `/ratio - FET:OCEAN price ratio\n\n` +
+      `/ratio - FET:OCEAN price ratio\n` +
+      `/top - Top OCEAN buyers by time period\n\n` +
       `*Admins Only:*\n` +
       `/setmin <amount> - Set min OCEAN amount\n` +
       `/enable - Enable buy alerts\n` +
@@ -179,6 +182,126 @@ export function registerCommands(bot: TelegramBot): void {
       await bot.sendMessage(msg.chat.id, 
         '❌ Error fetching ratio data. Please try again later.'
       );
+    }
+  });
+
+  // /top command - Show time selection buttons (public command)
+  bot.onText(/\/top/, async (msg) => {
+    const chatId = msg.chat.id.toString();
+    
+    try {
+      const keyboard = {
+        inline_keyboard: [
+          [
+            { text: '5m', callback_data: 'top:5m' },
+            { text: '30m', callback_data: 'top:30m' },
+            { text: '1h', callback_data: 'top:1h' },
+          ],
+          [
+            { text: '4h', callback_data: 'top:4h' },
+            { text: '12h', callback_data: 'top:12h' },
+            { text: '1d', callback_data: 'top:1d' },
+          ],
+          [
+            { text: '7d', callback_data: 'top:7d' },
+          ],
+        ],
+      };
+
+      await bot.sendMessage(
+        msg.chat.id,
+        '🏆 *Top OCEAN Buyers - OCEAN/WETH*\n\nSelect time period:',
+        {
+          parse_mode: 'Markdown',
+          reply_markup: keyboard,
+        }
+      );
+
+      logger.info({ chatId }, 'Top command executed - showing time selection');
+    } catch (error) {
+      logger.error({ error, chatId }, 'Failed to execute top command');
+      await bot.sendMessage(msg.chat.id, '❌ Error showing options. Please try again later.');
+    }
+  });
+
+  // Handle callback queries for /top time selection
+  bot.on('callback_query', async (query) => {
+    if (!query.data?.startsWith('top:')) return;
+
+    const chatId = query.message?.chat.id;
+    const messageId = query.message?.message_id;
+    
+    if (!chatId || !messageId) return;
+
+    try {
+      const timePeriod = query.data.split(':')[1];
+      
+      // Answer callback to remove loading state
+      await bot.answerCallbackQuery(query.id, { text: `Fetching ${timePeriod} data...` });
+
+      // Edit message to show loading
+      await bot.editMessageText(
+        `⏳ Fetching top OCEAN buyers for *${timePeriod}*...\n\nThis may take a moment.`,
+        {
+          chat_id: chatId,
+          message_id: messageId,
+          parse_mode: 'Markdown',
+        }
+      );
+
+      logger.info({ chatId, timePeriod }, 'Fetching top buyers');
+
+      // Fetch top buyers
+      const result = await topBuyersService.getTopBuyers(timePeriod);
+
+      if (!result) {
+        await bot.editMessageText(
+          '❌ Unable to fetch top buyers. Please try again later.',
+          {
+            chat_id: chatId,
+            message_id: messageId,
+          }
+        );
+        return;
+      }
+
+      // Format message
+      const lines = result.topBuyers.map((buyer, i) => {
+        const shortAddr = buyer.address.slice(0, 6) + '…' + buyer.address.slice(-4);
+        const oceanFormatted = buyer.oceanAmount.toLocaleString(undefined, {
+          maximumFractionDigits: 0,
+        });
+        const usdFormatted = buyer.usdValue.toLocaleString(undefined, {
+          maximumFractionDigits: 2,
+        });
+        return `${i + 1}. [${shortAddr}](https://etherscan.io/address/${buyer.address}) → ${oceanFormatted} OCEAN ($${usdFormatted})`;
+      });
+
+      const message = [
+        `🏆 *Top 5 OCEAN Buyers (${timePeriod})*`,
+        ``,
+        ...lines,
+        ``,
+        `🐋 Whale Count: ${result.whaleCount} wallets > $5,000`,
+        `👥 Total Buyers: ${result.totalBuyers}`,
+        ``,
+        `_OCEAN/WETH on Uniswap V2_`,
+      ].join('\n');
+
+      await bot.editMessageText(message, {
+        chat_id: chatId,
+        message_id: messageId,
+        parse_mode: 'Markdown',
+        disable_web_page_preview: true,
+      });
+
+      logger.info({ chatId, timePeriod, topBuyers: result.topBuyers.length }, 'Top buyers sent');
+    } catch (error) {
+      logger.error({ error, chatId }, 'Failed to handle top callback query');
+      await bot.answerCallbackQuery(query.id, { 
+        text: 'Error fetching data. Please try again.', 
+        show_alert: true 
+      });
     }
   });
 
