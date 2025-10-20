@@ -26,30 +26,15 @@ const ERC20_ABI = [
 const OCEAN = '0x967da4048cd07ab37855c090aaf366e4ce1b9f48';
 const WHALE_USD_THRESHOLD = 5000;
 
-// Known pool addresses (transfers TO these are sells, not buys)
-const KNOWN_POOLS = new Set([
-  '0x9b7d8b6c0a8d6e1f5a5e7f8b5c6d3e4f5a6b7c8d'.toLowerCase(), // Uniswap V2 OCEAN/WETH
-  '0x1b84765de8b7566e4ceaf4d0fd3c5af52d3dde4f'.toLowerCase(), // Uniswap V3 OCEAN/WETH (0.3%)
-  // Add more pools as needed
-]);
-
-// Excluded addresses (routers, aggregators, contracts that shouldn't count as "buyers")
-const EXCLUDED_ADDRESSES = new Set([
-  '0x7a250d5630b4cf539739df2c5dacb4c659f2488d'.toLowerCase(), // Uniswap V2 Router
-  '0xe592427a0aece92de3edee1f18e0157c05861564'.toLowerCase(), // Uniswap V3 Router
-  '0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45'.toLowerCase(), // Uniswap V3 Router 2
-  '0xef1c6e67703c7bd7107eed8303fbe6ec2554bf6b'.toLowerCase(), // Uniswap Universal Router
-  '0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad'.toLowerCase(), // Uniswap Universal Router 2
-  '0xdef1c0ded9bec7f1a1670819833240f027b25eff'.toLowerCase(), // 0x Protocol
-  '0x1111111254eeb25477b68fb85ed929f73a960582'.toLowerCase(), // 1inch V5 Router
-  '0x1111111254fb6c44bac0bed2854e76f90643097d'.toLowerCase(), // 1inch V4 Router
-  '0x11111112542d85b3ef69ae05771c2dccff4faa26'.toLowerCase(), // 1inch V3 Router
-  '0x216b4b4ba9f3e719726886d34a177484278bfcae'.toLowerCase(), // ParaSwap
-  '0xdef171fe48cf0115b1d80b88dc8eab59176fee57'.toLowerCase(), // ParaSwap Augustus V6
-  '0x6352a56caadc4f1e25cd6c75970fa768a3304e64'.toLowerCase(), // OpenOcean
-  '0x99a58482bd75cbab83b27ec03ca68ff489b5788f'.toLowerCase(), // Cowswap
-  '0xeff6cb8b614999d130e537751ee99724d01aa167'.toLowerCase(), // Uniswap V4 Pool Manager or other contract
-  ethers.ZeroAddress.toLowerCase(), // Burn/mint address
+// Known OCEAN pool addresses (transfers FROM these are buys)
+const KNOWN_OCEAN_POOLS = new Set([
+  // Ethereum
+  '0x9b7dad79fc16106b47a3dab791f389c167e15eb0'.toLowerCase(), // Uniswap V2 OCEAN/WETH
+  '0x283e2e83b7f3e297c4b7c02114ab0196b001a109'.toLowerCase(), // Uniswap V3 OCEAN/WETH 0.3%
+  '0x98785fda382725d2d6b5022bf78b30eeaefdc387'.toLowerCase(), // Uniswap V3 OCEAN/USDT 0.3%
+  '0xba12222222228d8ba445958a75a0704d566bf2c8'.toLowerCase(), // Balancer V2 Vault
+  // Polygon
+  '0x5a94f81d25c73eddbdd84b84e8f6d36c58270510'.toLowerCase(), // QuickSwap OCEAN/WMATIC
 ]);
 
 export interface TopBuyer {
@@ -174,25 +159,17 @@ export class TopBuyersService {
         const { from: sender, to: recipient, value } = parsed.args;
         const oceanAmount = Number(ethers.formatUnits(value, oceanDecimals));
 
-        // Skip mints/burns (zero address)
-        if (
-          sender.toLowerCase() === ethers.ZeroAddress.toLowerCase() ||
-          recipient.toLowerCase() === ethers.ZeroAddress.toLowerCase()
-        ) {
+        // Only count transfers FROM known OCEAN pools (these are actual DEX buys)
+        if (!KNOWN_OCEAN_POOLS.has(sender.toLowerCase())) {
           continue;
         }
 
-        // Skip if recipient is an excluded router/aggregator
-        if (EXCLUDED_ADDRESSES.has(recipient.toLowerCase())) {
+        // Skip if recipient is zero address (burn)
+        if (recipient.toLowerCase() === ethers.ZeroAddress.toLowerCase()) {
           continue;
         }
 
-        // Skip if recipient is a known pool (this is a sell, not a buy)
-        if (KNOWN_POOLS.has(recipient.toLowerCase())) {
-          continue;
-        }
-
-        // This is a buy! Count it
+        // This is a buy from a pool! Count it
         const key = ethers.getAddress(recipient);
         const prev = byBuyer.get(key) || 0;
         byBuyer.set(key, prev + oceanAmount);
