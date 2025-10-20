@@ -178,8 +178,11 @@ export class TopBuyersService {
         const { from: sender, to: recipient, value } = parsed.args;
         const oceanAmount = Number(ethers.formatUnits(value, oceanDecimals));
 
-        // Only count transfers FROM known OCEAN pools (these are actual DEX buys)
-        if (!KNOWN_OCEAN_POOLS.has(sender.toLowerCase())) {
+        // Count transfers FROM known OCEAN pools OR from intermediary contracts
+        const isFromPool = KNOWN_OCEAN_POOLS.has(sender.toLowerCase());
+        const isFromIntermediary = INTERMEDIARY_CONTRACTS.has(sender.toLowerCase());
+
+        if (!isFromPool && !isFromIntermediary) {
           unknownSenders.add(sender.toLowerCase());
           continue;
         }
@@ -189,12 +192,12 @@ export class TopBuyersService {
           continue;
         }
 
-        // Skip if recipient is an intermediary contract (router, position manager, etc.)
+        // Skip if recipient is another intermediary (still in routing)
         if (INTERMEDIARY_CONTRACTS.has(recipient.toLowerCase())) {
           continue;
         }
 
-        // This is a buy from a pool to a real wallet! Count it
+        // This is a buy! Either direct from pool or final hop from intermediary
         const key = ethers.getAddress(recipient);
         const prev = byBuyer.get(key) || 0;
         byBuyer.set(key, prev + oceanAmount);
