@@ -28,6 +28,8 @@ const OCEAN = '0x967da4048cd07ab37855c090aaf366e4ce1b9f48';
 const WETH = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2';
 const WHALE_USD_THRESHOLD = 5000;
 const UNI_V2_PAIR = '0x9b7dad79fc16106b47a3dab791f389c167e15eb0'; // OCEAN/WETH
+const MAX_RETRIES = 3;
+const RETRY_DELAY_MS = 1000; // Start with 1 second
 
 // Known router/aggregator addresses to exclude as buyers
 const EXCLUDED_ADDRESSES = new Set([
@@ -83,6 +85,38 @@ function parseTimePeriod(period: string): number {
     default:
       return 24;
   }
+}
+
+/**
+ * Retry a function with exponential backoff
+ */
+async function retryWithBackoff<T>(
+  fn: () => Promise<T>,
+  maxRetries: number = MAX_RETRIES,
+  delayMs: number = RETRY_DELAY_MS,
+  context: string = 'operation'
+): Promise<T> {
+  let lastError: any;
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      
+      if (attempt < maxRetries) {
+        const backoffDelay = delayMs * Math.pow(2, attempt - 1); // Exponential backoff
+        logger.warn(
+          { attempt, maxRetries, backoffDelay, error, context },
+          `Retry attempt ${attempt}/${maxRetries} failed, retrying in ${backoffDelay}ms`
+        );
+        await new Promise(resolve => setTimeout(resolve, backoffDelay));
+      }
+    }
+  }
+  
+  logger.error({ error: lastError, context, maxRetries }, `All ${maxRetries} retry attempts failed`);
+  throw lastError;
 }
 
 /**
@@ -322,30 +356,62 @@ export class TopBuyersService {
         continue;
       }
 
-      // WETH transfers FROM pair (OCEAN buys)
+      // WETH transfers FROM pair (OCEAN buys) - with retry
       const fromUrl = `https://api.etherscan.io/v2/api?chainid=1&module=logs&action=getLogs&fromBlock=${chunkFromBlock}&toBlock=${chunkToBlock}&address=${WETH}&topic0=${transferTopic}&topic1=${pairAddrPadded}&apikey=${env.ETHERSCAN_API_KEY}`;
 
-      const fromResponse = await fetch(fromUrl);
-      const fromData = (await fromResponse.json()) as EtherscanResponse;
+      const fromData = await retryWithBackoff(
+        async () => {
+          const response = await fetch(fromUrl);
+          if (!response.ok) {
+            throw new Error(`Etherscan API returned ${response.status}: ${response.statusText}`);
+          }
+          const json = (await response.json()) as EtherscanResponse;
+          
+          if (json.status === '0' && json.message !== 'No records found') {
+            throw new Error(`Etherscan API error: ${json.message}`);
+          }
+          
+          return json;
+        },
+        MAX_RETRIES,
+        RETRY_DELAY_MS,
+        `WETH FROM pair chunk ${i + 1}/${numChunks}`
+      );
 
       if (fromData.status === '1' && Array.isArray(fromData.result)) {
         allLogs.push(...(fromData.result as EtherscanLog[]));
       } else if (fromData.message) {
-        logger.warn({ message: fromData.message }, 'WETH FROM pair API warning');
+        logger.warn({ message: fromData.message }, 'WETH FROM pair API warning (non-critical)');
       }
 
       await new Promise(r => setTimeout(r, 250));
 
-      // WETH transfers TO pair (OCEAN sells)
+      // WETH transfers TO pair (OCEAN sells) - with retry
       const toUrl = `https://api.etherscan.io/v2/api?chainid=1&module=logs&action=getLogs&fromBlock=${chunkFromBlock}&toBlock=${chunkToBlock}&address=${WETH}&topic0=${transferTopic}&topic2=${pairAddrPadded}&apikey=${env.ETHERSCAN_API_KEY}`;
 
-      const toResponse = await fetch(toUrl);
-      const toData = (await toResponse.json()) as EtherscanResponse;
+      const toData = await retryWithBackoff(
+        async () => {
+          const response = await fetch(toUrl);
+          if (!response.ok) {
+            throw new Error(`Etherscan API returned ${response.status}: ${response.statusText}`);
+          }
+          const json = (await response.json()) as EtherscanResponse;
+          
+          if (json.status === '0' && json.message !== 'No records found') {
+            throw new Error(`Etherscan API error: ${json.message}`);
+          }
+          
+          return json;
+        },
+        MAX_RETRIES,
+        RETRY_DELAY_MS,
+        `WETH TO pair chunk ${i + 1}/${numChunks}`
+      );
 
       if (toData.status === '1' && Array.isArray(toData.result)) {
         allLogs.push(...(toData.result as EtherscanLog[]));
       } else if (toData.message) {
-        logger.warn({ message: toData.message }, 'WETH TO pair API warning');
+        logger.warn({ message: toData.message }, 'WETH TO pair API warning (non-critical)');
       }
 
       if (i < numChunks - 1) await new Promise(r => setTimeout(r, 250));
@@ -387,13 +453,31 @@ export class TopBuyersService {
 
         logger.debug({ chunk: i + 1, total: numChunks, fromBlock: chunkFromBlock, toBlock: chunkToBlock }, 'Fetching chunk');
 
-        const response = await fetch(url);
-        const data = (await response.json()) as EtherscanResponse;
+        // Retry this chunk if it fails
+        const data = await retryWithBackoff(
+          async () => {
+            const response = await fetch(url);
+            if (!response.ok) {
+              throw new Error(`Etherscan API returned ${response.status}: ${response.statusText}`);
+            }
+            const json = (await response.json()) as EtherscanResponse;
+            
+            // Treat NOTOK status as an error to trigger retry
+            if (json.status === '0' && json.message !== 'No records found') {
+              throw new Error(`Etherscan API error: ${json.message}`);
+            }
+            
+            return json;
+          },
+          MAX_RETRIES,
+          RETRY_DELAY_MS,
+          `Etherscan logs chunk ${i + 1}/${numChunks}`
+        );
 
         if (data.status === '1' && Array.isArray(data.result)) {
           allLogs.push(...(data.result as EtherscanLog[]));
         } else if (data.message) {
-          logger.warn({ message: data.message, chunk: i + 1, url: url.replace(env.ETHERSCAN_API_KEY, 'XXX') }, 'Etherscan API warning');
+          logger.warn({ message: data.message, chunk: i + 1 }, 'Etherscan API warning (non-critical)');
         }
 
         // Respect rate limits (5 calls/sec)
