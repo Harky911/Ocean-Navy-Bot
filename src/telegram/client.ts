@@ -6,6 +6,7 @@ import { configManager } from './config.js';
 import { registerCommands } from './commands.js';
 import { logger } from '../utils/logger.js';
 import { oceanToNumber } from '../utils/bigint.js';
+import { blacklistService } from '../services/blacklist.js';
 
 class TelegramClient {
   private bot: TelegramBot;
@@ -38,6 +39,12 @@ class TelegramClient {
     const amount = oceanToNumber(buy.oceanAmount);
     if (amount < config.minOceanAlert) {
       logger.debug({ chatId: targetChatId, amount, minAmount: config.minOceanAlert }, 'Below min threshold, skipping');
+      return;
+    }
+
+    // Check if buyer address is blacklisted
+    if (buy.buyerAddress && await blacklistService.isBlacklisted(buy.buyerAddress)) {
+      logger.debug({ chatId: targetChatId, address: buy.buyerAddress }, 'Address is blacklisted, skipping');
       return;
     }
 

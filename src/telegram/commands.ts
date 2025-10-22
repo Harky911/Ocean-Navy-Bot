@@ -4,6 +4,7 @@ import { logger } from '../utils/logger.js';
 import { env } from '../config/env.js';
 import { ratioService } from '../services/ratio.js';
 import { topBuyersService } from '../services/top-buyers.js';
+import { blacklistService } from '../services/blacklist.js';
 
 function isAllowedChat(chatId: string): boolean {
   // If no whitelist is configured, allow all chats (backward compatible)
@@ -53,7 +54,8 @@ export function registerCommands(bot: TelegramBot): void {
       `/top - Top OCEAN buyers (public)\n` +
       `/setmin <amount> - Set minimum OCEAN (admin)\n` +
       `/enable - Enable alerts (admin)\n` +
-      `/disable - Disable alerts (admin)`,
+      `/disable - Disable alerts (admin)\n` +
+      `/blacklist - Manage blacklisted addresses (admin)`,
       { parse_mode: 'Markdown' }
     );
   });
@@ -72,7 +74,9 @@ export function registerCommands(bot: TelegramBot): void {
       `*Admins Only:*\n` +
       `/setmin <amount> - Set min OCEAN amount\n` +
       `/enable - Enable buy alerts\n` +
-      `/disable - Disable buy alerts\n\n` +
+      `/disable - Disable buy alerts\n` +
+      `/blacklist <address> - Add/remove address from blacklist\n` +
+      `/blacklist show - View blacklisted addresses\n\n` +
       `Example: \`/setmin 100\` to only alert for buys ≥100 OCEAN`,
       { parse_mode: 'Markdown' }
     );
@@ -302,6 +306,110 @@ export function registerCommands(bot: TelegramBot): void {
         text: 'Error fetching data. Please try again.', 
         show_alert: true 
       });
+    }
+  });
+
+  // /blacklist command - manage blacklisted addresses
+  bot.onText(/\/blacklist(.*)/, async (msg, match) => {
+    const chatId = msg.chat.id.toString();
+    
+    // Check if chat is allowed
+    if (!isAllowedChat(chatId)) {
+      return;
+    }
+
+    // Check if user is admin
+    if (!await isUserAdmin(bot, msg.chat.id, msg.from!.id)) {
+      await bot.sendMessage(msg.chat.id, '⚠️ Only admins can manage the blacklist.');
+      return;
+    }
+
+    try {
+      const args = match?.[1]?.trim() || '';
+
+      // /blacklist show - display current blacklist
+      if (args === 'show' || args === '') {
+        const addresses = await blacklistService.getAll();
+        
+        if (addresses.length === 0) {
+          await bot.sendMessage(
+            msg.chat.id,
+            '📋 *Blacklist*\n\nNo addresses blacklisted.\n\nUse `/blacklist <address>` to add an address.',
+            { parse_mode: 'Markdown' }
+          );
+          return;
+        }
+
+        const lines = addresses.map((addr, i) => {
+          const shortAddr = addr.slice(0, 6) + '…' + addr.slice(-4);
+          return `${i + 1}. \`${shortAddr}\` ([view](https://etherscan.io/address/${addr}))`;
+        });
+
+        const message = [
+          `📋 *Blacklist* (${addresses.length} address${addresses.length === 1 ? '' : 'es'})`,
+          '',
+          ...lines,
+          '',
+          '_These addresses will not trigger buy notifications._',
+          '',
+          'Use `/blacklist <address>` to add/remove an address.',
+        ].join('\n');
+
+        await bot.sendMessage(msg.chat.id, message, {
+          parse_mode: 'Markdown',
+          disable_web_page_preview: true,
+        });
+
+        logger.info({ chatId, count: addresses.length }, 'Blacklist shown');
+        return;
+      }
+
+      // Parse address from args
+      const addressMatch = args.match(/^(0x[a-fA-F0-9]{40})$/);
+      
+      if (!addressMatch) {
+        await bot.sendMessage(
+          msg.chat.id,
+          '⚠️ Invalid address format.\n\n' +
+          '*Usage:*\n' +
+          '• `/blacklist <address>` - Add/remove an address\n' +
+          '• `/blacklist show` - Show blacklist',
+          { parse_mode: 'Markdown' }
+        );
+        return;
+      }
+
+      const address = addressMatch[1];
+
+      // Toggle the address
+      const added = await blacklistService.toggle(address);
+      const shortAddr = address.slice(0, 6) + '…' + address.slice(-4);
+
+      if (added) {
+        await bot.sendMessage(
+          msg.chat.id,
+          `✅ *Address Blacklisted*\n\n` +
+          `\`${shortAddr}\` will no longer trigger buy notifications.\n\n` +
+          `Use \`/blacklist ${address}\` again to remove it.`,
+          { parse_mode: 'Markdown' }
+        );
+        logger.info({ chatId, address }, 'Address added to blacklist');
+      } else {
+        await bot.sendMessage(
+          msg.chat.id,
+          `✅ *Address Removed from Blacklist*\n\n` +
+          `\`${shortAddr}\` will now trigger buy notifications again.`,
+          { parse_mode: 'Markdown' }
+        );
+        logger.info({ chatId, address }, 'Address removed from blacklist');
+      }
+
+    } catch (error) {
+      logger.error({ error, chatId }, 'Failed to handle blacklist command');
+      await bot.sendMessage(
+        msg.chat.id,
+        '❌ Failed to update blacklist. Please try again.'
+      );
     }
   });
 
