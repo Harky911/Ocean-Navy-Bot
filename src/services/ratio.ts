@@ -1,5 +1,9 @@
 import { logger } from '../utils/logger.js';
 
+// Retry configuration
+const MAX_RETRIES = 3;
+const RETRY_DELAY_MS = 1000;
+
 interface RatioData {
   now: number;
   m5: number;
@@ -20,6 +24,38 @@ interface CoinGeckoHistoryResponse {
   prices?: [number, number][]; // [timestamp, price]
 }
 
+/**
+ * Retry a function with exponential backoff
+ */
+async function retryWithBackoff<T>(
+  fn: () => Promise<T>,
+  maxRetries: number = MAX_RETRIES,
+  delayMs: number = RETRY_DELAY_MS,
+  context: string = 'operation'
+): Promise<T> {
+  let lastError: any;
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      
+      if (attempt < maxRetries) {
+        const backoffDelay = delayMs * Math.pow(2, attempt - 1);
+        logger.warn(
+          { attempt, maxRetries, backoffDelay, error, context },
+          `Retry attempt ${attempt}/${maxRetries} failed, retrying in ${backoffDelay}ms`
+        );
+        await new Promise(resolve => setTimeout(resolve, backoffDelay));
+      }
+    }
+  }
+  
+  logger.error({ error: lastError, context, maxRetries }, `All ${maxRetries} retry attempts failed`);
+  throw lastError;
+}
+
 class RatioService {
   private cache: { 
     data: RatioData; 
@@ -31,69 +67,79 @@ class RatioService {
   private readonly COINGECKO_HISTORY = 'https://api.coingecko.com/api/v3/coins';
 
   /**
-   * Get current prices for FET and OCEAN
+   * Get current prices for FET and OCEAN (with retry)
    */
   private async getCurrentPrices(): Promise<{ fet: number; ocean: number } | null> {
     try {
-      const response = await fetch(
-        `${this.COINGECKO_SIMPLE}?ids=fetch-ai,ocean-protocol&vs_currencies=usd`
+      return await retryWithBackoff(
+        async () => {
+          const response = await fetch(
+            `${this.COINGECKO_SIMPLE}?ids=fetch-ai,ocean-protocol&vs_currencies=usd`
+          );
+
+          if (!response.ok) {
+            throw new Error(`CoinGecko API returned ${response.status}: ${response.statusText}`);
+          }
+
+          const data = await response.json() as CoinGeckoSimpleResponse;
+          
+          if (!data['fetch-ai']?.usd || !data['ocean-protocol']?.usd) {
+            throw new Error('Missing price data from CoinGecko response');
+          }
+
+          return {
+            fet: data['fetch-ai'].usd,
+            ocean: data['ocean-protocol'].usd,
+          };
+        },
+        MAX_RETRIES,
+        RETRY_DELAY_MS,
+        'CoinGecko current prices'
       );
-
-      if (!response.ok) {
-        logger.error({ status: response.status }, 'CoinGecko API error (current prices)');
-        return null;
-      }
-
-      const data = await response.json() as CoinGeckoSimpleResponse;
-      
-      if (!data['fetch-ai']?.usd || !data['ocean-protocol']?.usd) {
-        logger.error({ data }, 'Missing price data from CoinGecko');
-        return null;
-      }
-
-      return {
-        fet: data['fetch-ai'].usd,
-        ocean: data['ocean-protocol'].usd,
-      };
     } catch (error) {
-      logger.error({ error }, 'Failed to fetch current prices');
+      logger.error({ error }, 'Failed to fetch current prices after retries');
       return null;
     }
   }
 
   /**
-   * Get historical prices for a coin
+   * Get historical prices for a coin (with retry)
    * @param coinId - 'fetch-ai' or 'ocean-protocol'
    * @param days - Number of days (1 = 5min intervals, 30 = hourly intervals)
    */
   private async getHistoricalPrices(coinId: string, days: number): Promise<Map<number, number> | null> {
     try {
-      const response = await fetch(
-        `${this.COINGECKO_HISTORY}/${coinId}/market_chart?vs_currency=usd&days=${days}`
+      return await retryWithBackoff(
+        async () => {
+          const response = await fetch(
+            `${this.COINGECKO_HISTORY}/${coinId}/market_chart?vs_currency=usd&days=${days}`
+          );
+
+          if (!response.ok) {
+            throw new Error(`CoinGecko API returned ${response.status}: ${response.statusText}`);
+          }
+
+          const data = await response.json() as CoinGeckoHistoryResponse;
+          
+          if (!data.prices || data.prices.length === 0) {
+            throw new Error('No historical price data in response');
+          }
+
+          // Create a map of all price data points
+          const priceMap = new Map<number, number>();
+          for (const [timestamp, price] of data.prices) {
+            priceMap.set(timestamp, price);
+          }
+
+          logger.debug({ coinId, days, dataPoints: priceMap.size }, 'Fetched historical prices');
+          return priceMap;
+        },
+        MAX_RETRIES,
+        RETRY_DELAY_MS,
+        `CoinGecko historical ${coinId} (${days}d)`
       );
-
-      if (!response.ok) {
-        logger.error({ status: response.status, coinId, days }, 'CoinGecko API error (historical)');
-        return null;
-      }
-
-      const data = await response.json() as CoinGeckoHistoryResponse;
-      
-      if (!data.prices || data.prices.length === 0) {
-        logger.error({ coinId, days }, 'No historical price data');
-        return null;
-      }
-
-      // Create a map of all price data points
-      const priceMap = new Map<number, number>();
-      for (const [timestamp, price] of data.prices) {
-        priceMap.set(timestamp, price);
-      }
-
-      logger.debug({ coinId, days, dataPoints: priceMap.size }, 'Fetched historical prices');
-      return priceMap;
     } catch (error) {
-      logger.error({ error, coinId, days }, 'Failed to fetch historical prices');
+      logger.error({ error, coinId, days }, 'Failed to fetch historical prices after retries');
       return null;
     }
   }
@@ -128,12 +174,13 @@ class RatioService {
   /**
    * Get historical ratios from price maps
    * Uses different price maps for short (1-day) vs long (30-day) intervals
+   * Handles null price maps gracefully
    */
   private getHistoricalRatios(
-    fetPricesShort: Map<number, number>,
-    oceanPricesShort: Map<number, number>,
-    fetPricesLong: Map<number, number>,
-    oceanPricesLong: Map<number, number>
+    fetPricesShort: Map<number, number> | null,
+    oceanPricesShort: Map<number, number> | null,
+    fetPricesLong: Map<number, number> | null,
+    oceanPricesLong: Map<number, number> | null
   ): {
     m5: number | null;
     m30: number | null;
@@ -160,26 +207,40 @@ class RatioService {
 
     const ratios: any = {};
 
-    // Process short intervals
-    for (const { key, minutes } of shortIntervals) {
-      const fetPrice = this.findClosestPrice(fetPricesShort, minutes);
-      const oceanPrice = this.findClosestPrice(oceanPricesShort, minutes);
+    // Process short intervals (only if we have short-term data)
+    if (fetPricesShort && oceanPricesShort) {
+      for (const { key, minutes } of shortIntervals) {
+        const fetPrice = this.findClosestPrice(fetPricesShort, minutes);
+        const oceanPrice = this.findClosestPrice(oceanPricesShort, minutes);
 
-      if (fetPrice && oceanPrice) {
-        ratios[key] = this.calculateRatio(oceanPrice, fetPrice);
-      } else {
+        if (fetPrice && oceanPrice) {
+          ratios[key] = this.calculateRatio(oceanPrice, fetPrice);
+        } else {
+          ratios[key] = null;
+        }
+      }
+    } else {
+      // Mark all short intervals as null if data unavailable
+      for (const { key } of shortIntervals) {
         ratios[key] = null;
       }
     }
 
-    // Process long intervals
-    for (const { key, minutes } of longIntervals) {
-      const fetPrice = this.findClosestPrice(fetPricesLong, minutes);
-      const oceanPrice = this.findClosestPrice(oceanPricesLong, minutes);
+    // Process long intervals (only if we have long-term data)
+    if (fetPricesLong && oceanPricesLong) {
+      for (const { key, minutes } of longIntervals) {
+        const fetPrice = this.findClosestPrice(fetPricesLong, minutes);
+        const oceanPrice = this.findClosestPrice(oceanPricesLong, minutes);
 
-      if (fetPrice && oceanPrice) {
-        ratios[key] = this.calculateRatio(oceanPrice, fetPrice);
-      } else {
+        if (fetPrice && oceanPrice) {
+          ratios[key] = this.calculateRatio(oceanPrice, fetPrice);
+        } else {
+          ratios[key] = null;
+        }
+      }
+    } else {
+      // Mark all long intervals as null if data unavailable
+      for (const { key } of longIntervals) {
         ratios[key] = null;
       }
     }
@@ -208,6 +269,7 @@ class RatioService {
 
       // Fetch historical data: 1-day for short intervals, 30-day for long intervals
       // This gives us 5-minute granularity for recent data and hourly for longer periods
+      logger.info('Fetching historical price data from CoinGecko...');
       const [fetPricesShort, oceanPricesShort, fetPricesLong, oceanPricesLong] = await Promise.all([
         this.getHistoricalPrices('fetch-ai', 1),      // 1 day = 5min intervals
         this.getHistoricalPrices('ocean-protocol', 1), // 1 day = 5min intervals
@@ -215,8 +277,17 @@ class RatioService {
         this.getHistoricalPrices('ocean-protocol', 30), // 30 days = hourly intervals
       ]);
 
-      if (!fetPricesShort || !oceanPricesShort || !fetPricesLong || !oceanPricesLong) {
-        logger.warn('Failed to fetch historical prices, using current price for all intervals');
+      // Log which data sets were successfully fetched
+      logger.info({
+        fetShort: !!fetPricesShort,
+        oceanShort: !!oceanPricesShort,
+        fetLong: !!fetPricesLong,
+        oceanLong: !!oceanPricesLong,
+      }, 'Historical data fetch results');
+
+      // If ALL historical data failed, fall back to current price for everything
+      if (!fetPricesShort && !oceanPricesShort && !fetPricesLong && !oceanPricesLong) {
+        logger.warn('ALL historical price fetches failed, using current price for all intervals');
         return {
           now,
           m5: now,
@@ -247,6 +318,23 @@ class RatioService {
         w1: historical.w1 ?? now,
         month: historical.month ?? now,
       };
+
+      // Log which values fell back to current price
+      const fallbackIntervals = [];
+      if (historical.m5 === null) fallbackIntervals.push('5m');
+      if (historical.m30 === null) fallbackIntervals.push('30m');
+      if (historical.h1 === null) fallbackIntervals.push('1hr');
+      if (historical.h4 === null) fallbackIntervals.push('4hr');
+      if (historical.d1 === null) fallbackIntervals.push('1day');
+      if (historical.w1 === null) fallbackIntervals.push('week');
+      if (historical.month === null) fallbackIntervals.push('month');
+
+      if (fallbackIntervals.length > 0) {
+        logger.warn(
+          { fallbackIntervals: fallbackIntervals.join(', ') },
+          'Some historical intervals unavailable, using current price as fallback'
+        );
+      }
 
       // Update cache with data and prices
       this.cache = {
