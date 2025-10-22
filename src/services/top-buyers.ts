@@ -132,6 +132,22 @@ export class TopBuyersService {
   }
 
   /**
+   * Check if an address is a contract (has bytecode)
+   * Returns true if contract, false if EOA (wallet)
+   */
+  private async isContract(address: string): Promise<boolean> {
+    try {
+      const code = await this.provider.getCode(address);
+      // If code is '0x' or empty, it's an EOA (wallet)
+      // If code has bytecode, it's a contract
+      return code !== '0x' && code.length > 2;
+    } catch (error) {
+      logger.warn({ address, error }, 'Failed to check if address is contract, assuming wallet');
+      return false; // Default to treating as wallet if check fails
+    }
+  }
+
+  /**
    * Get top OCEAN buyers for a time period
    */
   async getTopBuyers(timePeriod: string): Promise<TopBuyersResult | null> {
@@ -279,18 +295,53 @@ export class TopBuyersService {
 
       logger.info({ uniqueBuyers: byBuyer.size }, 'Processed buyers with NET positive OCEAN');
 
-      // Calculate whale count
+      // Step 5: Filter out contract addresses (only keep EOAs/wallets)
+      // Check top 20 buyers (in case we need to filter some out)
+      const topCandidates = [...byBuyer.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 20); // Check more than we need in case some are contracts
+
+      logger.info({ candidateCount: topCandidates.length }, 'Checking top candidates for contracts');
+
+      // Check each candidate in parallel
+      const contractChecks = await Promise.all(
+        topCandidates.map(async ([address, oceanAmount]) => {
+          const isContract = await this.isContract(address);
+          return { address, oceanAmount, isContract };
+        })
+      );
+
+      // Filter to only EOAs (not contracts)
+      const eoaOnly = contractChecks.filter(c => !c.isContract);
+      const contractsFiltered = contractChecks.filter(c => c.isContract);
+
+      if (contractsFiltered.length > 0) {
+        logger.info(
+          { 
+            contractAddresses: contractsFiltered.map(c => c.address),
+            count: contractsFiltered.length 
+          },
+          'Filtered out contract addresses from top buyers'
+        );
+      }
+
+      // Rebuild byBuyer map with only EOAs
+      const eoaBuyers = new Map<string, number>();
+      for (const { address, oceanAmount } of eoaOnly) {
+        eoaBuyers.set(address, oceanAmount);
+      }
+
+      // Calculate whale count (only EOAs)
       let whaleCount = 0;
-      for (const [, oceanAmount] of byBuyer) {
+      for (const [, oceanAmount] of eoaBuyers) {
         const usd = oceanAmount * oceanUsdPrice;
         if (usd >= WHALE_USD_THRESHOLD) whaleCount++;
       }
 
-      // Get top 5 buyers
-      const topBuyers = [...byBuyer.entries()]
-        .sort((a, b) => b[1] - a[1])
+      // Get top 5 EOA buyers
+      const topBuyers = eoaOnly
         .slice(0, 5)
-        .map(([address, oceanAmount]) => ({
+        .map(({ address, oceanAmount }) => ({
           address,
           oceanAmount,
           usdValue: oceanAmount * oceanUsdPrice,
@@ -301,7 +352,7 @@ export class TopBuyersService {
       return {
         topBuyers,
         whaleCount,
-        totalBuyers: byBuyer.size,
+        totalBuyers: eoaBuyers.size, // Only count EOA wallets, not contracts
         timePeriod,
         oceanUsdPrice,
       };
