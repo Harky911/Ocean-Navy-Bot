@@ -2,7 +2,7 @@ import { logger } from '../utils/logger.js';
 
 // Retry configuration
 const MAX_RETRIES = 3;
-const RETRY_DELAY_MS = 1000;
+const RETRY_DELAY_MS = 2000; // Start with 2 seconds to avoid rate limits
 
 interface RatioData {
   now: number;
@@ -69,7 +69,7 @@ class RatioService {
     timestamp: number;
     currentPrices?: { fet: number; ocean: number };
   } | null = null;
-  private readonly CACHE_TTL = 2 * 60 * 1000; // 2 minute cache
+  private readonly CACHE_TTL = 5 * 60 * 1000; // 5 minute cache (reduce CoinGecko API calls)
   private readonly COINGECKO_SIMPLE = 'https://api.coingecko.com/api/v3/simple/price';
   private readonly COINGECKO_HISTORY = 'https://api.coingecko.com/api/v3/coins';
 
@@ -291,19 +291,14 @@ class RatioService {
 
       // Fetch historical data: 1-day for short intervals, 30-day for long intervals
       // This gives us 5-minute granularity for recent data and hourly for longer periods
-      // Fetch sequentially with delays to avoid CoinGecko rate limits
+      // Fetch in parallel - if all 4 calls happen within same rate limit window, they all succeed
       logger.info('Fetching historical price data from CoinGecko...');
-      
-      const fetPricesShort = await this.getHistoricalPrices('fetch-ai', 1);
-      await new Promise(resolve => setTimeout(resolve, 300)); // 300ms delay
-      
-      const oceanPricesShort = await this.getHistoricalPrices('ocean-protocol', 1);
-      await new Promise(resolve => setTimeout(resolve, 300)); // 300ms delay
-      
-      const fetPricesLong = await this.getHistoricalPrices('fetch-ai', 30);
-      await new Promise(resolve => setTimeout(resolve, 300)); // 300ms delay
-      
-      const oceanPricesLong = await this.getHistoricalPrices('ocean-protocol', 30);
+      const [fetPricesShort, oceanPricesShort, fetPricesLong, oceanPricesLong] = await Promise.all([
+        this.getHistoricalPrices('fetch-ai', 1),      // 1 day = 5min intervals
+        this.getHistoricalPrices('ocean-protocol', 1), // 1 day = 5min intervals
+        this.getHistoricalPrices('fetch-ai', 30),     // 30 days = hourly intervals
+        this.getHistoricalPrices('ocean-protocol', 30), // 30 days = hourly intervals
+      ]);
 
       // Log which data sets were successfully fetched
       logger.info({
