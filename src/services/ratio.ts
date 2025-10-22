@@ -40,11 +40,13 @@ async function retryWithBackoff<T>(
       return await fn();
     } catch (error) {
       lastError = error;
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorName = error instanceof Error ? error.name : 'Unknown';
       
       if (attempt < maxRetries) {
         const backoffDelay = delayMs * Math.pow(2, attempt - 1);
         logger.warn(
-          { attempt, maxRetries, backoffDelay, error, context },
+          { attempt, maxRetries, backoffDelay, errorMessage, errorName, context },
           `Retry attempt ${attempt}/${maxRetries} failed, retrying in ${backoffDelay}ms`
         );
         await new Promise(resolve => setTimeout(resolve, backoffDelay));
@@ -52,7 +54,12 @@ async function retryWithBackoff<T>(
     }
   }
   
-  logger.error({ error: lastError, context, maxRetries }, `All ${maxRetries} retry attempts failed`);
+  const finalErrorMsg = lastError instanceof Error ? lastError.message : String(lastError);
+  const finalErrorStack = lastError instanceof Error ? lastError.stack : undefined;
+  logger.error(
+    { errorMessage: finalErrorMsg, errorStack: finalErrorStack, context, maxRetries },
+    `All ${maxRetries} retry attempts failed`
+  );
   throw lastError;
 }
 
@@ -111,17 +118,27 @@ class RatioService {
     try {
       return await retryWithBackoff(
         async () => {
-          const response = await fetch(
-            `${this.COINGECKO_HISTORY}/${coinId}/market_chart?vs_currency=usd&days=${days}`
-          );
+          const url = `${this.COINGECKO_HISTORY}/${coinId}/market_chart?vs_currency=usd&days=${days}`;
+          
+          logger.debug({ url, coinId, days }, 'Fetching historical prices from CoinGecko');
+          
+          const response = await fetch(url);
 
           if (!response.ok) {
-            throw new Error(`CoinGecko API returned ${response.status}: ${response.statusText}`);
+            const errorText = await response.text();
+            logger.error(
+              { status: response.status, statusText: response.statusText, errorText, url },
+              'CoinGecko API error response'
+            );
+            throw new Error(`CoinGecko API returned ${response.status}: ${response.statusText} - ${errorText}`);
           }
 
           const data = await response.json() as CoinGeckoHistoryResponse;
           
+          logger.debug({ coinId, days, hasData: !!data.prices, priceCount: data.prices?.length }, 'Parsed CoinGecko response');
+          
           if (!data.prices || data.prices.length === 0) {
+            logger.error({ data, coinId, days }, 'Empty or missing prices in CoinGecko response');
             throw new Error('No historical price data in response');
           }
 
@@ -139,7 +156,12 @@ class RatioService {
         `CoinGecko historical ${coinId} (${days}d)`
       );
     } catch (error) {
-      logger.error({ error, coinId, days }, 'Failed to fetch historical prices after retries');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorStack = error instanceof Error ? error.stack : undefined;
+      logger.error(
+        { errorMessage, errorStack, coinId, days },
+        'Failed to fetch historical prices after retries'
+      );
       return null;
     }
   }
@@ -269,13 +291,19 @@ class RatioService {
 
       // Fetch historical data: 1-day for short intervals, 30-day for long intervals
       // This gives us 5-minute granularity for recent data and hourly for longer periods
+      // Fetch sequentially with delays to avoid CoinGecko rate limits
       logger.info('Fetching historical price data from CoinGecko...');
-      const [fetPricesShort, oceanPricesShort, fetPricesLong, oceanPricesLong] = await Promise.all([
-        this.getHistoricalPrices('fetch-ai', 1),      // 1 day = 5min intervals
-        this.getHistoricalPrices('ocean-protocol', 1), // 1 day = 5min intervals
-        this.getHistoricalPrices('fetch-ai', 30),     // 30 days = hourly intervals
-        this.getHistoricalPrices('ocean-protocol', 30), // 30 days = hourly intervals
-      ]);
+      
+      const fetPricesShort = await this.getHistoricalPrices('fetch-ai', 1);
+      await new Promise(resolve => setTimeout(resolve, 300)); // 300ms delay
+      
+      const oceanPricesShort = await this.getHistoricalPrices('ocean-protocol', 1);
+      await new Promise(resolve => setTimeout(resolve, 300)); // 300ms delay
+      
+      const fetPricesLong = await this.getHistoricalPrices('fetch-ai', 30);
+      await new Promise(resolve => setTimeout(resolve, 300)); // 300ms delay
+      
+      const oceanPricesLong = await this.getHistoricalPrices('ocean-protocol', 30);
 
       // Log which data sets were successfully fetched
       logger.info({
