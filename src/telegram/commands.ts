@@ -5,6 +5,7 @@ import { env } from '../config/env.js';
 import { ratioService } from '../services/ratio.js';
 import { topBuyersService } from '../services/top-buyers.js';
 import { blacklistService } from '../services/blacklist.js';
+import { xAccountsService } from '../services/x-accounts.js';
 
 function isAllowedChat(chatId: string): boolean {
   // If no whitelist is configured, allow all chats (backward compatible)
@@ -55,7 +56,8 @@ export function registerCommands(bot: TelegramBot): void {
       `/setmin <amount> - Set minimum OCEAN (admin)\n` +
       `/enable - Enable alerts (admin)\n` +
       `/disable - Disable alerts (admin)\n` +
-      `/blacklist - Manage blacklisted addresses (admin)`,
+      `/blacklist - Manage blacklisted addresses (admin)\n` +
+      `/xaccount - Monitor X (Twitter) accounts (admin)`,
       { parse_mode: 'Markdown' }
     );
   });
@@ -76,7 +78,9 @@ export function registerCommands(bot: TelegramBot): void {
       `/enable - Enable buy alerts\n` +
       `/disable - Disable buy alerts\n` +
       `/blacklist <address> - Add/remove address from blacklist\n` +
-      `/blacklist show - View blacklisted addresses\n\n` +
+      `/blacklist show - View blacklisted addresses\n` +
+      `/xaccount <username> - Monitor X account tweets\n` +
+      `/xaccount show - View monitored X accounts\n\n` +
       `Example: \`/setmin 100\` to only alert for buys ≥100 OCEAN`,
       { parse_mode: 'Markdown' }
     );
@@ -409,6 +413,110 @@ export function registerCommands(bot: TelegramBot): void {
       await bot.sendMessage(
         msg.chat.id,
         '❌ Failed to update blacklist. Please try again.'
+      );
+    }
+  });
+
+  // /xaccount command - manage monitored X accounts
+  bot.onText(/\/xaccount(.*)/, async (msg, match) => {
+    const chatId = msg.chat.id.toString();
+    
+    // Check if chat is allowed
+    if (!isAllowedChat(chatId)) {
+      return;
+    }
+
+    // Check if user is admin
+    if (!await isUserAdmin(bot, msg.chat.id, msg.from!.id)) {
+      await bot.sendMessage(msg.chat.id, '⚠️ Only admins can manage X account monitoring.');
+      return;
+    }
+
+    try {
+      const args = match?.[1]?.trim() || '';
+
+      // /xaccount show - display monitored accounts
+      if (args === 'show' || args === '') {
+        const accounts = await xAccountsService.getAll();
+        
+        if (accounts.length === 0) {
+          await bot.sendMessage(
+            msg.chat.id,
+            '📋 *X Account Monitor*\n\nNo accounts being monitored.\n\nUse `/xaccount <username>` to add an account.',
+            { parse_mode: 'Markdown' }
+          );
+          return;
+        }
+
+        const lines = accounts.map((username, i) => {
+          return `${i + 1}. [@${username}](https://x.com/${username})`;
+        });
+
+        const message = [
+          `📋 *X Account Monitor* (${accounts.length} account${accounts.length === 1 ? '' : 's'})`,
+          '',
+          ...lines,
+          '',
+          '_New tweets from these accounts will be posted here._',
+          '',
+          'Use `/xaccount <username>` to add/remove an account.',
+        ].join('\n');
+
+        await bot.sendMessage(msg.chat.id, message, {
+          parse_mode: 'Markdown',
+          disable_web_page_preview: true,
+        });
+
+        logger.info({ chatId, count: accounts.length }, 'X accounts shown');
+        return;
+      }
+
+      // Parse username from args
+      const username = args.replace(/^@/, '').trim();
+      
+      // Validate username (alphanumeric and underscores, 1-15 chars)
+      if (!/^[a-zA-Z0-9_]{1,15}$/.test(username)) {
+        await bot.sendMessage(
+          msg.chat.id,
+          '⚠️ Invalid X username format.\n\n' +
+          '*Usage:*\n' +
+          '• `/xaccount <username>` - Add/remove an account\n' +
+          '• `/xaccount show` - Show monitored accounts\n\n' +
+          '*Example:*\n' +
+          '`/xaccount elonmusk`\n' +
+          '`/xaccount @VitalikButerin`',
+          { parse_mode: 'Markdown' }
+        );
+        return;
+      }
+
+      // Toggle the account
+      const added = await xAccountsService.toggle(username);
+
+      if (added) {
+        await bot.sendMessage(
+          msg.chat.id,
+          `✅ *Now Monitoring @${username}*\n\n` +
+          `New tweets will be posted to this chat.\n\n` +
+          `Use \`/xaccount ${username}\` again to stop monitoring.`,
+          { parse_mode: 'Markdown' }
+        );
+        logger.info({ chatId, username }, 'X account added to monitor');
+      } else {
+        await bot.sendMessage(
+          msg.chat.id,
+          `✅ *Stopped Monitoring @${username}*\n\n` +
+          `Tweets will no longer be posted.`,
+          { parse_mode: 'Markdown' }
+        );
+        logger.info({ chatId, username }, 'X account removed from monitor');
+      }
+
+    } catch (error) {
+      logger.error({ error, chatId }, 'Failed to handle xaccount command');
+      await bot.sendMessage(
+        msg.chat.id,
+        '❌ Failed to update X account monitoring. Please try again.'
       );
     }
   });

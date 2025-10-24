@@ -7,11 +7,13 @@ import { registerCommands } from './commands.js';
 import { logger } from '../utils/logger.js';
 import { oceanToNumber } from '../utils/bigint.js';
 import { blacklistService } from '../services/blacklist.js';
+import { XMonitorService } from '../services/x-monitor.js';
 
 class TelegramClient {
   private bot: TelegramBot;
   private batchQueue: Map<string, BuyAlert[]> = new Map();
   private batchTimers: Map<string, NodeJS.Timeout> = new Map();
+  private xMonitor: XMonitorService;
 
   constructor() {
     this.bot = new TelegramBot(env.TELEGRAM_BOT_TOKEN, {
@@ -22,6 +24,12 @@ class TelegramClient {
 
     this.bot.on('polling_error', (error) => {
       logger.error({ error }, 'Telegram polling error');
+    });
+
+    // Initialize and start X account monitor
+    this.xMonitor = new XMonitorService(this.bot);
+    this.xMonitor.start().catch(error => {
+      logger.error({ error }, 'Failed to start X monitor');
     });
 
     logger.info({ polling: env.TELEGRAM_POLLING }, 'Telegram bot initialized');
